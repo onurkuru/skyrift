@@ -135,7 +135,9 @@ typedef struct { float x, y; char txt[16]; int life; Uint32 color; } Popup;
 
 typedef struct {
     float x, y, vx, vy;
-    int facing, on_ground, flying;
+    int facing, on_ground, gliding;
+    int air_jumps;                 /* air jumps left (refilled on landing) */
+    int spin_t;                    /* ball-spin frames after an air jump */
     int hp, hp_max;
     int inv, shoot_cd, drop;
     int dash, dash_cd;             /* dash frames left / cooldown */
@@ -150,6 +152,7 @@ typedef struct { int x, y, active; } Checkpoint;
 /* ---------- globals ---------- */
 static SDL_Renderer *g_ren;
 static SDL_Texture *tex_eagle, *tex_frog_idle, *tex_frog_jump, *tex_opossum;
+static SDL_Texture *tex_sq_idle, *tex_sq_run, *tex_sq_jump;
 static SDL_Texture *tex_death, *tex_gem, *tex_cherry;
 static SDL_Texture *tex_tileset, *tex_back, *tex_middle;
 static SDL_Texture *tex_tree, *tex_bush, *tex_shroom, *tex_platform;
@@ -197,14 +200,16 @@ static int jump_prev, shoot_prev, dash_prev;
 
 
 /* ---------- audio: tiny procedural chiptune synth ----------
-   All SFX are rendered to PCM buffers at boot - no sound files needed,
-   works identically on desktop and Vita. Mixed in the SDL callback. */
+   All SFX and the ambient music loop are rendered to PCM at boot -
+   no sound files needed, works identically on desktop and Vita. */
 #define A_RATE 22050
 enum { S_JUMP, S_FLY, S_SHOOT, S_DASH, S_HIT, S_KILL, S_HURT, S_GEM,
        S_CHERRY, S_CHECK, S_LEVEL, S_DOOR, S_ENTER, S_BOSS, S_WIN, S_START, S_N };
 static Sint16 *sbuf[S_N];
 static int slen[S_N];
 static struct { int id, pos, on; } voices[8];
+static Sint16 *music_buf;
+static int music_len, music_pos;
 static SDL_AudioDeviceID adev;
 
 static void audio_cb(void *ud, Uint8 *stream, int len) {
@@ -213,6 +218,10 @@ static void audio_cb(void *ud, Uint8 *stream, int len) {
     int n = len / 2;
     for (int i = 0; i < n; i++) {
         int s = 0;
+        if (music_buf) {
+            s += music_buf[music_pos++];
+            if (music_pos >= music_len) music_pos = 0;
+        }
         for (int v = 0; v < 8; v++) {
             if (!voices[v].on) continue;
             s += sbuf[voices[v].id][voices[v].pos++];
@@ -234,22 +243,30 @@ static void play_sfx(int id) {
     SDL_UnlockAudioDevice(adev);
 }
 
-/* render a tone into buf at sample offset; wave 0=square 1=sine 2=noise */
-static int synth_tone(Sint16 *buf, int at, float f0, float f1,
-                      float dur, float vol, int wave) {
+/* waves: 0 square 1 sine 2 noise 3 triangle 4 saw.
+   attack: seconds of fade-in; the rest decays exponentially. */
+static int synth_tone(Sint16 *buf, int total_len, int at, float f0, float f1,
+                      float dur, float vol, int wave, float attack) {
     int n = (int)(dur * A_RATE);
+    int na = (int)(attack * A_RATE);
     float ph = 0;
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < n && at + i < total_len; i++) {
         float t = (float)i / n;
         float f = f0 + (f1 - f0) * t;
         ph += f / A_RATE;
-        float env = (1.0f - t);
-        env *= env;
+        float env;
+        if (i < na) env = (float)i / na;
+        else { env = 1.0f - (float)(i - na) / (n - na); env *= env; }
+        float m = fmodf(ph, 1.0f);
         float s;
-        if (wave == 0)      s = fmodf(ph, 1.0f) < 0.5f ? 1.0f : -1.0f;
-        else if (wave == 1) s = sinf(ph * 6.28318f);
-        else                s = (float)(rand() % 2001 - 1000) / 1000.0f;
-        int acc = buf[at + i] + (int)(s * vol * 3000 * env);
+        switch (wave) {
+            case 0:  s = m < 0.5f ? 0.7f : -0.7f; break;
+            case 1:  s = sinf(ph * 6.28318f); break;
+            case 2:  s = (float)(rand() % 2001 - 1000) / 1000.0f; break;
+            case 3:  s = m < 0.5f ? m * 4 - 1 : 3 - m * 4; break;
+            default: s = m * 2 - 1; break;
+        }
+        int acc = buf[at + i] + (int)(s * vol * 3200 * env);
         if (acc > 32767) acc = 32767;
         if (acc < -32768) acc = -32768;
         buf[at + i] = (Sint16)acc;
@@ -257,46 +274,91 @@ static int synth_tone(Sint16 *buf, int at, float f0, float f1,
     return at + n;
 }
 
+static int g_synth_len;   /* total_len for the fill fns below */
+#define T(buf, at, f0, f1, dur, vol, wave, atk) \
+    synth_tone(buf, g_synth_len, at, f0, f1, dur, vol, wave, atk)
+
+static void f_jump(Sint16 *b)  { T(b, 0, 260, 540, 0.13f, 0.55f, 3, 0.005f); }
+static void f_fly(Sint16 *b)   { int a = T(b, 0, 392, 392, 0.06f, 0.5f, 3, 0.004f);
+                                 T(b, a, 587, 784, 0.12f, 0.5f, 3, 0.004f); }
+static void f_shoot(Sint16 *b) { T(b, 0, 760, 320, 0.06f, 0.4f, 0, 0.002f);
+                                 T(b, 0, 1520, 640, 0.05f, 0.15f, 0, 0.002f); }
+static void f_dash(Sint16 *b)  { T(b, 0, 300, 1100, 0.11f, 0.35f, 2, 0.01f);
+                                 T(b, 0, 500, 900, 0.11f, 0.3f, 3, 0.01f); }
+static void f_hit(Sint16 *b)   { T(b, 0, 260, 120, 0.07f, 0.5f, 0, 0.002f);
+                                 T(b, 0, 200, 100, 0.06f, 0.4f, 2, 0.002f); }
+static void f_kill(Sint16 *b)  { int a = T(b, 0, 520, 400, 0.07f, 0.5f, 0, 0.002f);
+                                 a = T(b, a, 392, 260, 0.08f, 0.5f, 0, 0);
+                                 T(b, a, 240, 80, 0.14f, 0.5f, 2, 0); }
+static void f_hurt(Sint16 *b)  { T(b, 0, 196, 82, 0.2f, 0.55f, 3, 0.004f);
+                                 T(b, 0, 180, 70, 0.16f, 0.3f, 2, 0.004f); }
+static void f_gem(Sint16 *b)   { int a = T(b, 0, 987, 987, 0.07f, 0.45f, 1, 0.003f);
+                                 T(b, a, 1318, 1318, 0.12f, 0.45f, 1, 0.003f); }
+static void f_cherry(Sint16 *b){ int a = T(b, 0, 659, 659, 0.08f, 0.45f, 1, 0.005f);
+                                 T(b, a, 987, 987, 0.13f, 0.45f, 1, 0.005f); }
+static void f_check(Sint16 *b) { int a = T(b, 0, 523, 523, 0.1f, 0.45f, 3, 0.008f);
+                                 T(b, a, 784, 784, 0.18f, 0.45f, 3, 0.008f); }
+static void f_level(Sint16 *b) { int a = 0;
+                                 a = T(b, a, 523, 523, 0.1f, 0.5f, 3, 0.006f);
+                                 a = T(b, a, 659, 659, 0.1f, 0.5f, 3, 0.006f);
+                                 a = T(b, a, 784, 784, 0.1f, 0.5f, 3, 0.006f);
+                                 T(b, a, 1046, 1046, 0.28f, 0.55f, 3, 0.006f);
+                                 T(b, a + (int)(0.06f * A_RATE), 1318, 1318,
+                                   0.22f, 0.25f, 1, 0.01f); }
+static void f_door(Sint16 *b)  { int a = 0;
+                                 a = T(b, a, 392, 392, 0.13f, 0.45f, 1, 0.01f);
+                                 a = T(b, a, 494, 494, 0.13f, 0.45f, 1, 0.01f);
+                                 a = T(b, a, 587, 587, 0.13f, 0.45f, 1, 0.01f);
+                                 T(b, a, 784, 784, 0.3f, 0.5f, 1, 0.01f); }
+static void f_enter(Sint16 *b) { T(b, 0, 700, 90, 0.38f, 0.45f, 1, 0.02f);
+                                 T(b, 0, 400, 60, 0.3f, 0.2f, 2, 0.05f); }
+static void f_boss(Sint16 *b)  { T(b, 0, 82, 46, 0.5f, 0.7f, 4, 0.02f);
+                                 T(b, 0, 41, 30, 0.6f, 0.5f, 3, 0.02f);
+                                 T(b, (int)(0.1f * A_RATE), 60, 35, 0.4f, 0.35f, 2, 0.02f); }
+static void f_win(Sint16 *b)   { int a = 0;
+                                 a = T(b, a, 523, 523, 0.12f, 0.5f, 3, 0.006f);
+                                 a = T(b, a, 659, 659, 0.12f, 0.5f, 3, 0.006f);
+                                 a = T(b, a, 784, 784, 0.12f, 0.5f, 3, 0.006f);
+                                 a = T(b, a, 659, 659, 0.1f, 0.45f, 3, 0.006f);
+                                 T(b, a, 1046, 1046, 0.5f, 0.55f, 3, 0.006f);
+                                 T(b, a + (int)(0.1f * A_RATE), 1568, 1568,
+                                   0.4f, 0.22f, 1, 0.02f); }
+static void f_start(Sint16 *b) { int a = T(b, 0, 440, 440, 0.09f, 0.45f, 3, 0.004f);
+                                 T(b, a, 880, 880, 0.18f, 0.45f, 3, 0.004f); }
+
 static void synth_make(int id, float total, void (*fill)(Sint16 *)) {
     slen[id] = (int)(total * A_RATE);
+    g_synth_len = slen[id];
     sbuf[id] = calloc((size_t)slen[id], 2);
     fill(sbuf[id]);
 }
 
-static void f_jump(Sint16 *b)  { synth_tone(b, 0, 300, 620, 0.12f, 0.8f, 0); }
-static void f_fly(Sint16 *b)   { synth_tone(b, 0, 200, 480, 0.18f, 0.6f, 1); }
-static void f_shoot(Sint16 *b) { synth_tone(b, 0, 950, 380, 0.07f, 0.7f, 0); }
-static void f_dash(Sint16 *b)  { synth_tone(b, 0, 500, 1400, 0.12f, 0.6f, 2); }
-static void f_hit(Sint16 *b)   { synth_tone(b, 0, 350, 120, 0.09f, 0.8f, 2); }
-static void f_kill(Sint16 *b)  { int a = synth_tone(b, 0, 500, 180, 0.1f, 0.8f, 0);
-                                 synth_tone(b, a, 300, 60, 0.12f, 0.8f, 2); }
-static void f_hurt(Sint16 *b)  { synth_tone(b, 0, 220, 70, 0.22f, 0.9f, 0); }
-static void f_gem(Sint16 *b)   { int a = synth_tone(b, 0, 880, 880, 0.06f, 0.6f, 1);
-                                 synth_tone(b, a, 1320, 1320, 0.09f, 0.6f, 1); }
-static void f_cherry(Sint16 *b){ int a = synth_tone(b, 0, 660, 660, 0.08f, 0.6f, 1);
-                                 synth_tone(b, a, 990, 990, 0.1f, 0.6f, 1); }
-static void f_check(Sint16 *b) { int a = synth_tone(b, 0, 523, 523, 0.09f, 0.6f, 0);
-                                 synth_tone(b, a, 784, 784, 0.14f, 0.6f, 0); }
-static void f_level(Sint16 *b) { int a = 0;
-                                 a = synth_tone(b, a, 523, 523, 0.09f, 0.7f, 0);
-                                 a = synth_tone(b, a, 659, 659, 0.09f, 0.7f, 0);
-                                 a = synth_tone(b, a, 784, 784, 0.09f, 0.7f, 0);
-                                 synth_tone(b, a, 1046, 1046, 0.2f, 0.7f, 0); }
-static void f_door(Sint16 *b)  { int a = 0;
-                                 a = synth_tone(b, a, 392, 392, 0.12f, 0.6f, 1);
-                                 a = synth_tone(b, a, 523, 523, 0.12f, 0.6f, 1);
-                                 synth_tone(b, a, 659, 784, 0.25f, 0.6f, 1); }
-static void f_enter(Sint16 *b) { synth_tone(b, 0, 800, 100, 0.4f, 0.6f, 1); }
-static void f_boss(Sint16 *b)  { int a = synth_tone(b, 0, 90, 55, 0.3f, 1.0f, 0);
-                                 synth_tone(b, a, 70, 40, 0.35f, 1.0f, 2); }
-static void f_win(Sint16 *b)   { int a = 0;
-                                 a = synth_tone(b, a, 523, 523, 0.12f, 0.7f, 0);
-                                 a = synth_tone(b, a, 659, 659, 0.12f, 0.7f, 0);
-                                 a = synth_tone(b, a, 784, 784, 0.12f, 0.7f, 0);
-                                 a = synth_tone(b, a, 659, 659, 0.1f, 0.7f, 0);
-                                 synth_tone(b, a, 1046, 1046, 0.4f, 0.8f, 0); }
-static void f_start(Sint16 *b) { int a = synth_tone(b, 0, 440, 440, 0.09f, 0.6f, 0);
-                                 synth_tone(b, a, 880, 880, 0.16f, 0.6f, 0); }
+/* gentle ambient loop: I-vi-IV-V arpeggios over soft bass, ~9.8s */
+static void music_make(void) {
+    static const float CH[4][4] = {
+        {261.63f, 329.63f, 392.00f, 523.25f},   /* C  */
+        {220.00f, 261.63f, 329.63f, 440.00f},   /* Am */
+        {174.61f, 220.00f, 261.63f, 349.23f},   /* F  */
+        {196.00f, 246.94f, 293.66f, 392.00f},   /* G  */
+    };
+    float bar = 2.45f;                            /* seconds per chord */
+    music_len = (int)(bar * 4 * A_RATE);
+    g_synth_len = music_len;
+    music_buf = calloc((size_t)music_len, 2);
+    for (int c = 0; c < 4; c++) {
+        int base = (int)(c * bar * A_RATE);
+        /* soft bass pad, one note per bar */
+        synth_tone(music_buf, music_len, base, CH[c][0] / 2, CH[c][0] / 2,
+                   bar * 0.98f, 0.10f, 3, 0.4f);
+        /* slow sine arpeggio: 8 notes per bar */
+        static const int pat[8] = {0, 1, 2, 3, 2, 3, 1, 2};
+        for (int n = 0; n < 8; n++) {
+            int at = base + (int)(n * bar / 8 * A_RATE);
+            synth_tone(music_buf, music_len, at, CH[c][pat[n]], CH[c][pat[n]],
+                       bar / 8 * 1.6f, 0.075f, 1, 0.05f);
+        }
+    }
+}
 
 static void audio_init(void) {
     SDL_AudioSpec want = {0}, have;
@@ -304,14 +366,15 @@ static void audio_init(void) {
     want.channels = 1; want.samples = 512; want.callback = audio_cb;
     adev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
     if (!adev) { fprintf(stderr, "no audio: %s\n", SDL_GetError()); return; }
-    synth_make(S_JUMP, 0.13f, f_jump);   synth_make(S_FLY, 0.19f, f_fly);
-    synth_make(S_SHOOT, 0.08f, f_shoot); synth_make(S_DASH, 0.13f, f_dash);
-    synth_make(S_HIT, 0.1f, f_hit);      synth_make(S_KILL, 0.23f, f_kill);
-    synth_make(S_HURT, 0.23f, f_hurt);   synth_make(S_GEM, 0.16f, f_gem);
-    synth_make(S_CHERRY, 0.19f, f_cherry); synth_make(S_CHECK, 0.24f, f_check);
-    synth_make(S_LEVEL, 0.48f, f_level); synth_make(S_DOOR, 0.5f, f_door);
-    synth_make(S_ENTER, 0.41f, f_enter); synth_make(S_BOSS, 0.66f, f_boss);
-    synth_make(S_WIN, 0.87f, f_win);     synth_make(S_START, 0.26f, f_start);
+    synth_make(S_JUMP, 0.14f, f_jump);   synth_make(S_FLY, 0.20f, f_fly);
+    synth_make(S_SHOOT, 0.07f, f_shoot); synth_make(S_DASH, 0.12f, f_dash);
+    synth_make(S_HIT, 0.08f, f_hit);     synth_make(S_KILL, 0.3f, f_kill);
+    synth_make(S_HURT, 0.21f, f_hurt);   synth_make(S_GEM, 0.2f, f_gem);
+    synth_make(S_CHERRY, 0.22f, f_cherry); synth_make(S_CHECK, 0.29f, f_check);
+    synth_make(S_LEVEL, 0.6f, f_level);  synth_make(S_DOOR, 0.7f, f_door);
+    synth_make(S_ENTER, 0.4f, f_enter);  synth_make(S_BOSS, 0.72f, f_boss);
+    synth_make(S_WIN, 1.0f, f_win);      synth_make(S_START, 0.28f, f_start);
+    music_make();
     SDL_PauseAudioDevice(adev, 0);
 }
 
@@ -689,7 +752,7 @@ place:
         leaves[i].color = leaf_cols[rand() % 4];
     }
     player.hp = player.hp_max;
-    player.inv = 0; player.flying = 0;
+    player.inv = 0; player.gliding = 0; player.air_jumps = 1; player.spin_t = 0;
     player.vx = player.vy = 0; player.facing = 1; player.anim = 0;
     player.dash = player.dash_cd = 0;
     combo = 0; combo_timer = 0;
@@ -710,7 +773,8 @@ static void game_reset(void) {
 static void respawn(void) {
     player.x = player.spawnx; player.y = player.spawny;
     player.vx = player.vy = 0;
-    player.hp = player.hp_max; player.inv = 90; player.flying = 0;
+    player.hp = player.hp_max; player.inv = 90; player.gliding = 0;
+    player.air_jumps = 1; player.spin_t = 0;
     shake = 6;
 }
 
@@ -774,77 +838,76 @@ static void fire_bullet(void) {
 }
 
 static void update_player(void) {
-    float speed = player.flying ? FLY_SPEED : MOVE_SPEED;
+    float speed = MOVE_SPEED + (player.gliding ? 0.5f : 0.0f);
     if (in_left)  { player.vx = -speed; player.facing = -1; }
     else if (in_right) { player.vx = speed; player.facing = 1; }
-    else player.vx *= player.flying ? 0.9f : 0.7f;
+    else player.vx *= player.gliding ? 0.93f : 0.7f;
 
     int jump_pressed = in_jump && !jump_prev;
     int dash_pressed = in_dash && !dash_prev;
 
-    /* dash skill (LV2+): burst of speed with brief i-frames */
+    /* dash skill (LV2+): horizontal burst with brief i-frames */
     if (player.dash_cd > 0) player.dash_cd--;
     if (dash_pressed && level >= 2 && player.dash_cd == 0 && player.dash == 0) {
         player.dash = 10; player.dash_cd = 45;
         player.dashx = (float)player.facing; player.dashy = 0;
-        if (player.flying) {
-            if (in_up)   { player.dashy = -1; if (!in_left && !in_right) player.dashx = 0; }
-            if (in_down) { player.dashy =  1; if (!in_left && !in_right) player.dashx = 0; }
-        }
         if (player.inv < 12) player.inv = 12;
         play_sfx(S_DASH);
         spawn_particles(player.x + 6, player.y + 9, 0xFFF5F1E8, 8);
     }
 
-    if (player.flying) {
-        if (in_up)        player.vy = -FLY_SPEED;
-        else if (in_down) player.vy = FLY_SPEED;
-        else              player.vy *= 0.85f;
-        if (jump_pressed) player.flying = 0;
-        if (ticks % 3 == 0)
-            spawn_particles(player.x + PHIT_W / 2.0f - player.facing * 8,
-                            player.y + PHIT_H / 2.0f, 0xFFF5F1E8, 1);
-    } else {
-        player.vy += GRAVITY;
-        if (player.vy > 6.0f) player.vy = 6.0f;
-        /* variable jump height: releasing jump early cuts the rise */
-        if (!in_jump && player.vy < -2.0f) player.vy = -2.0f;
-        if (jump_pressed) {
-            /* coyote time: a few grace frames after walking off a ledge */
-            if (player.on_ground || player.coyote > 0) {
-                int fy = (int)((player.y + PHIT_H + 1) / TILE);
-                int on_plat = 0, on_hard = 0;
-                for (int tx = (int)(player.x / TILE);
-                     tx <= (int)((player.x + PHIT_W - 1) / TILE); tx++) {
-                    char c = map_at(tx, fy);
-                    if (c == '=') on_plat = 1;
-                    if (c == '#') on_hard = 1;
-                }
-                if (in_down && player.on_ground && on_plat && !on_hard) {
-                    player.drop = 12;
-                    player.y += 2;
-                } else {
-                    player.vy = JUMP_VEL;
-                    player.coyote = 0;
-                    player.jump_t = 8;
-                    play_sfx(S_JUMP);
-                    spawn_particles(player.x + PHIT_W / 2.0f, player.y + PHIT_H, 0xFFE7DCC2, 4);
-                }
-            } else {
-                player.flying = 1;
-                play_sfx(S_FLY);
-                spawn_particles(player.x + PHIT_W / 2.0f, player.y + PHIT_H / 2.0f, 0xFFF5F1E8, 6);
+    player.vy += GRAVITY;
+    if (player.vy > 6.0f) player.vy = 6.0f;
+    /* variable jump height: releasing jump early cuts the rise */
+    if (!in_jump && player.vy < -2.0f) player.vy = -2.0f;
+
+    /* glide: hold jump while falling - the tail catches the wind */
+    /* held (not freshly pressed) jump while falling engages the glide */
+    player.gliding = (!player.on_ground && in_jump && jump_prev &&
+                      player.vy > 0.4f && player.dash == 0);
+    if (player.gliding) {
+        if (player.vy > 0.65f) player.vy = 0.65f;
+        if (ticks % 5 == 0)
+            spawn_particles(player.x + PHIT_W / 2.0f - player.facing * 6,
+                            player.y + 4, 0xAAF5F1E8, 1);
+    }
+
+    if (jump_pressed) {
+        if (player.on_ground || player.coyote > 0) {
+            int fy = (int)((player.y + PHIT_H + 1) / TILE);
+            int on_plat = 0, on_hard = 0;
+            for (int tx = (int)(player.x / TILE);
+                 tx <= (int)((player.x + PHIT_W - 1) / TILE); tx++) {
+                char c = map_at(tx, fy);
+                if (c == '=') on_plat = 1;
+                if (c == '#') on_hard = 1;
             }
+            if (in_down && player.on_ground && on_plat && !on_hard) {
+                player.drop = 12;
+                player.y += 2;
+            } else {
+                player.vy = JUMP_VEL;
+                player.coyote = 0;
+                player.jump_t = 8;
+                play_sfx(S_JUMP);
+                spawn_particles(player.x + PHIT_W / 2.0f, player.y + PHIT_H, 0xFFE7DCC2, 4);
+            }
+        } else if (player.air_jumps > 0) {
+            /* air jump: tuck into a ball and kick off the wind */
+            player.air_jumps--;
+            player.vy = -4.6f;
+            player.spin_t = 22;
+            play_sfx(S_FLY);
+            spawn_particles(player.x + PHIT_W / 2.0f, player.y + PHIT_H, 0xFFF5F1E8, 6);
         }
     }
     if (player.drop > 0) player.drop--;
 
-    /* dash overrides velocity while active */
+    /* dash overrides velocity while active (hangs in the air) */
     if (player.dash > 0) {
         player.dash--;
         player.vx = player.dashx * 5.0f;
-        if (player.dashy != 0) player.vy = player.dashy * 5.0f;
-        else if (player.flying) player.vy = 0;
+        player.vy = 0;
         spawn_particles(player.x + 6, player.y + 9, 0xFFF5F1E8, 1);
     }
 
@@ -859,7 +922,9 @@ static void update_player(void) {
         float ny = player.y + player.vy;
         if (landing_box(player.x, ny, PHIT_W, PHIT_H, old_feet, player.drop == 0)) {
             player.on_ground = 1;
-            player.flying = 0;
+            player.gliding = 0;
+            player.air_jumps = 1;
+            player.spin_t = 0;
             player.coyote = 6;
             if (was_airborne && player.vy > 3.0f) {
                 player.land_t = 8;
@@ -878,8 +943,9 @@ static void update_player(void) {
     if (!player.on_ground && player.coyote > 0) player.coyote--;
     if (player.land_t > 0) player.land_t--;
     if (player.jump_t > 0) player.jump_t--;
+    if (player.spin_t > 0) player.spin_t--;
 
-    player.anim += fabsf(player.vx) * 0.15f + (player.flying ? 0.12f : 0.0f);
+    player.anim += fabsf(player.vx) * 0.15f;
 
     if (player.shoot_cd > 0) player.shoot_cd--;
     if (in_shoot && !shoot_prev && player.shoot_cd == 0) {
@@ -1514,8 +1580,8 @@ static void draw_entities(void) {
 
     /* tutorial hints near the spawn meadow */
     if (cur_level == 0 && game_state == ST_PLAY) {
-        draw_text((int)(40 - cam_x), (int)(330 - cam_y), 1, 0xCCF5F1E8, "Z: JUMP");
-        draw_text((int)(130 - cam_x), (int)(345 - cam_y), 1, 0xCCF5F1E8, "IN AIR: Z = FLY");
+        draw_text((int)(40 - cam_x), (int)(330 - cam_y), 1, 0xCCF5F1E8, "Z: JUMP - PRESS AGAIN IN AIR");
+        draw_text((int)(130 - cam_x), (int)(345 - cam_y), 1, 0xCCF5F1E8, "HOLD Z IN AIR: TAIL GLIDE");
         draw_text((int)(130 - cam_x), (int)(355 - cam_y), 1, 0xCC9BE3EA, "ON PLATFORM: DOWN+Z = DROP");
     }
 
@@ -1562,27 +1628,38 @@ static void draw_entities(void) {
     }
 
     if (player.inv % 8 < 5) {
-        /* Kip the wind-hawk: eagle sheet tinted sky-blue; art faces left */
-        int fi;
-        if (player.flying || player.dash > 0)
-            fi = (int)(ticks / 4) % 4;                    /* fast flap */
-        else if (!player.on_ground)
-            fi = (int)(ticks / 6) % 4;                    /* glide flap */
-        else if (fabsf(player.vx) > 0.3f)
-            fi = (int)(ticks / 5) % 4;                    /* ground hop-flutter */
-        else
-            fi = 3;                                       /* perched */
-        SDL_Rect src_r = {fi * 40, 0, 40, 41};
-        int dw = 36, dh = 37;
-        if (player.land_t > 0)      { dw = 36 + player.land_t; dh = 37 - player.land_t / 2; }
-        else if (player.jump_t > 0) { dw = 36 - player.jump_t / 2; dh = 37 + player.jump_t / 2; }
-        SDL_Rect d = {(int)(player.x - cam_x + sx) - 12 - (dw - 36) / 2,
-                      (int)(player.y - cam_y + sy) - 16 + (37 - dh), dw, dh};
-        double angle = player.flying ? player.vy * 4.0 * player.facing : 0.0;
-        SDL_SetTextureColorMod(tex_eagle, 130, 205, 255);
-        SDL_RenderCopyEx(g_ren, tex_eagle, &src_r, &d, angle, NULL,
+        /* Kip the glider squirrel (Sunny Land Woods player, CC0) */
+        SDL_Texture *sheet;
+        SDL_Rect src_r;
+        int fw, fh;
+        double angle = 0;
+        if (!player.on_ground) {
+            sheet = tex_sq_jump; fw = 46; fh = 43;
+            int fi;
+            if (player.spin_t > 0) {
+                fi = 1;                                  /* tucked ball */
+                angle = (22 - player.spin_t) * 32.0 * player.facing;
+            } else if (player.gliding) {
+                fi = 3;                                  /* spread, tail out */
+                angle = 8.0 * player.facing;
+            } else if (player.vy < 0) fi = 2;
+            else fi = 3;
+            src_r = (SDL_Rect){fi * fw, 0, fw, fh};
+        } else if (fabsf(player.vx) > 0.3f) {
+            sheet = tex_sq_run; fw = 54; fh = 27;
+            src_r = (SDL_Rect){(int)player.anim % 6 * fw, 0, fw, fh};
+        } else {
+            sheet = tex_sq_idle; fw = 33; fh = 25;
+            src_r = (SDL_Rect){(int)((float)ticks * 0.1f) % 8 * fw, 0, fw, fh};
+        }
+        int dw = fw, dh = fh;
+        if (player.land_t > 0)      { dw = fw + player.land_t; dh = fh - player.land_t / 2; }
+        else if (player.jump_t > 0) { dw = fw - player.jump_t / 2; dh = fh + player.jump_t / 2; }
+        SDL_Rect d = {(int)(player.x - cam_x + sx) + PHIT_W / 2 - dw / 2,
+                      (int)(player.y - cam_y + sy) + PHIT_H - dh, dw, dh};
+        /* woods squirrel art faces left */
+        SDL_RenderCopyEx(g_ren, sheet, &src_r, &d, angle, NULL,
             player.facing > 0 ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
-        SDL_SetTextureColorMod(tex_eagle, 255, 255, 255);
     }
 
     /* floating score popups */
@@ -1626,9 +1703,9 @@ static void draw_glow_pass(void) {
                       (int)(door_ty * TILE - cam_y) - 18, 44, 44};
         SDL_RenderCopy(g_ren, tex_glow, NULL, &d);
     }
-    if (player.flying || player.dash > 0) {
+    if (player.gliding || player.dash > 0) {
         SDL_SetTextureColorMod(tex_glow, 255, 255, 255);
-        SDL_SetTextureAlphaMod(tex_glow, player.dash > 0 ? 90 : 50);
+        SDL_SetTextureAlphaMod(tex_glow, player.dash > 0 ? 90 : 40);
         SDL_Rect d = {(int)(player.x - cam_x) - 10, (int)(player.y - cam_y) - 8, 32, 32};
         SDL_RenderCopy(g_ren, tex_glow, NULL, &d);
     }
@@ -1765,7 +1842,7 @@ static void draw_title(void) {
     set_color(0xFFF2CE45);
     for (const char *p = logo; *p; p++)
         draw_glyph(lx + (int)(p - logo) * 4 * s, 60, s, *p);
-    const char *sub = "A FREE-FLIGHT ADVENTURE";
+    const char *sub = "A SKY-GLIDING ADVENTURE";
     draw_text(LOGICAL_W / 2 - text_w(sub, 1) / 2, 100, 1, 0xFF9BE3EA, sub);
     if ((ticks / 30) % 2) {
         const char *pr = "PRESS Z / CROSS TO START";
@@ -1789,7 +1866,7 @@ static void draw_story(void) {
         "",
         "THE WIND IS DYING. THE ISLES ARE SINKING.",
         "",
-        "YOU ARE KIP - THE LAST SKY COURIER.",
+        "YOU ARE KIP - THE LAST GLIDER COURIER.",
         "CROSS THE TEN ISLES. FREE EVERY SHARD.",
         "RELIGHT THE BEACON.",
     };
@@ -1832,12 +1909,13 @@ static void draw_pause(void) {
     draw_text(LOGICAL_W / 2 - text_w(buf, 1) / 2, 100, 1, 0xFF9BA0AB, buf);
     static const char *help[] = {
         "MOVE: ARROWS / STICK",
-        "JUMP+FLY: Z / CROSS",
+        "JUMP / AIR JUMP: Z / CROSS",
+        "HOLD JUMP IN AIR: GLIDE",
         "SHOOT: X / SQUARE",
         "DASH: C / CIRCLE",
         "PAUSE: P / START",
     };
-    for (int i = 0; i < 5; i++)
+    for (int i = 0; i < 6; i++)
         draw_text(LOGICAL_W / 2 - text_w(help[i], 1) / 2, 125 + i * 11, 1,
                   0xFF9BE3EA, help[i]);
 }
@@ -1850,13 +1928,13 @@ static int run_tests(void) {
     in_left = in_right = in_up = in_down = in_jump = in_shoot = in_dash = 0;
     jump_prev = shoot_prev = dash_prev = 0;
 
-    player.x = 150; player.y = 350; player.vy = -4; player.flying = 0;
+    player.x = 150; player.y = 350; player.vy = -4; player.gliding = 0;
     player.on_ground = 0; player.drop = 0;
     update_player();
     if (player.y >= 350) { printf("FAIL pass-through-up: y=%.1f\n", player.y); fail++; }
     else printf("ok  pass-through-up (y 350 -> %.1f)\n", player.y);
 
-    player.x = 150; player.y = 318; player.vy = 6; player.flying = 0;
+    player.x = 150; player.y = 318; player.vy = 6; player.gliding = 0;
     player.on_ground = 0; player.drop = 0;
     update_player();
     if (!player.on_ground || player.vy != 0) { printf("FAIL land-from-above\n"); fail++; }
@@ -1882,6 +1960,25 @@ static int run_tests(void) {
     }
     if (hard_at(e->x + 8, e->y + 8)) { printf("FAIL eagle ghosted into ground\n"); fail++; }
     else printf("ok  eagle-bounce (stayed out of terrain, y=%.1f)\n", e->y);
+
+    /* glide: holding jump while falling caps fall speed */
+    player.x = 150; player.y = 250; player.vy = 5; player.on_ground = 0;
+    player.dash = 0;
+    in_jump = 1; jump_prev = 1;
+    update_player();
+    if (player.vy > 0.7f) { printf("FAIL glide: vy=%.2f\n", player.vy); fail++; }
+    else printf("ok  glide (vy 5 -> %.2f)\n", player.vy);
+    in_jump = 0; jump_prev = 0;
+
+    /* air jump: fresh press in the air lifts once */
+    player.x = 150; player.y = 250; player.vy = 2; player.on_ground = 0;
+    player.air_jumps = 1; player.coyote = 0;
+    in_jump = 1; jump_prev = 0;
+    update_player();
+    if (player.vy >= 0 || player.air_jumps != 0)
+        { printf("FAIL air-jump: vy=%.2f jumps=%d\n", player.vy, player.air_jumps); fail++; }
+    else printf("ok  air-jump (vy -> %.2f)\n", player.vy);
+    in_jump = 0; jump_prev = 0;
 
     /* skill unlock: score to LV3 must enable double shot */
     player.x = 150; player.y = 300;
@@ -1923,6 +2020,9 @@ int main(int argc, char *argv[]) {
 #endif
 
     tex_eagle       = load_png("eagle.png", NULL, NULL);
+    tex_sq_idle     = load_png("squirrel-idle.png", NULL, NULL);
+    tex_sq_run      = load_png("squirrel-run.png", NULL, NULL);
+    tex_sq_jump     = load_png("squirrel-jump.png", NULL, NULL);
     tex_frog_idle   = load_png("frog-idle.png", NULL, NULL);
     tex_frog_jump   = load_png("frog-jump.png", NULL, NULL);
     tex_opossum     = load_png("opossum.png", NULL, NULL);

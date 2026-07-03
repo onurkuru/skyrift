@@ -4,7 +4,7 @@ PS Vita ve masaüstü için özgün, serbest uçuşlu pixel-art macera oyunu.
 
 - **Kod**: özgün, tek dosya C99 + SDL2 ([src/main.c](src/main.c))
 - **Sanat**: ["Sunny Land"](https://opengameart.org/content/sunny-land-2d-pixel-art-pack) — Ansimuz, **CC0** (`assets/`)
-- **Ses**: dosyasız — açılışta prosedürel olarak sentezlenen chiptune efektler
+- **Ses**: dosyasız — açılışta sentezlenen yumuşak chiptune efektler + ambiyans müzik döngüsü (I-vi-IV-V arpej)
 - **PNG yükleyici**: [stb_image](https://github.com/nothings/stb) — public domain
 
 ![screenshot](screenshot.png)
@@ -13,8 +13,8 @@ PS Vita ve masaüstü için özgün, serbest uçuşlu pixel-art macera oyunu.
 
 Sunreef Adaları, Kadim Rüzgar'ın üzerinde süzülür. Gök Tiranı (Sky Tyrant)
 Büyük Fener'i paramparça etti; dokuz kırığı adalara saçıldı. Rüzgar ölüyor,
-adalar batıyor. Sen **Kip** — son Gök Kuryesi, genç bir rüzgar şahinisin.
-On adayı aş, her kırığı kurtar, Fener'i yeniden yak.
+adalar batıyor. Sen **Kip** — son Planörcü Kurye, kabarık kuyruğuyla rüzgarı
+yakalayan bir uçan sincapsın. On adayı aş, her kırığı kurtar, Fener'i yak.
 
 ## Yapı: 10 Ada
 
@@ -39,7 +39,8 @@ açılır. Kapıdan geçmek = bir Fener kırığı. 10. adada Tiranı devir, Fen
 | Eylem  | Masaüstü            | PS Vita          |
 |--------|---------------------|------------------|
 | Hareket| Ok tuşları / WASD   | Sol analog / dpad|
-| Zıpla & Uçuş | Z / Space     | Cross (X)        |
+| Zıpla / Çift zıpla | Z / Space | Cross (X)      |
+| Süzül (havada basılı tut) | Z | Cross (X)        |
 | Ateş   | X / Shift           | Square (kare)    |
 | Dash (LV2+) | C / V          | Circle (yuvarlak)|
 | Duraklat | P                 | Start            |
@@ -47,7 +48,7 @@ açılır. Kapıdan geçmek = bir Fener kırığı. 10. adada Tiranı devir, Fen
 
 ## Mekanikler
 
-- Havadayken tekrar zıplama tuşu → **serbest 8 yön uçuş** (Kip bir şahin!)
+- Havada tekrar bas → **çift zıplama** (topaklanıp takla atar); havada **basılı tut → kuyrukla süzülme** (yavaş alçalır, güçlü yatay kontrol) — planörcü sincap!
 - Tuğla platformlar tek yönlü; üstündeyken aşağı+zıpla → içinden düş
 - **Skor & combo**: mücevher +100, düşman +40/50, boss +1000; zincir öldürmede çarpan
 - **Seviye yetenekleri**: LV2 dash · LV3 çift atış · LV4 hızlı ateş · LV5 +1 can · LV6 üçlü atış

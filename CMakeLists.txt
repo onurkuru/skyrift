@@ -13,7 +13,7 @@ project(skyrift C)
 set(CMAKE_C_STANDARD 99)
 
 set(ASSETS
-  door.png door-opened.png
+  door.png door-opened.png squirrel-idle.png squirrel-run.png squirrel-jump.png
   eagle.png frog-idle.png frog-jump.png opossum.png death.png gem.png cherry.png
   tileset.png back.png middle.png
   tree.png bush.png shrooms.png platform.png sign.png
