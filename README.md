@@ -11,6 +11,19 @@ An original sky-gliding pixel-art adventure for PS Vita homebrew and desktop.
 
 ![screenshot](screenshot.png)
 
+## Play it on your Vita (no building required)
+
+1. Your Vita must be homebrew-enabled (HENkaku / h-encore² — follow
+   [vita.hacks.guide](https://vita.hacks.guide), it takes ~15 minutes).
+2. Download **`skyrift.vpk`** from the
+   [latest release](https://github.com/onurkuru/skyrift/releases/latest).
+3. Copy it to the Vita: in **VitaShell** press **SELECT** to start the FTP
+   server, connect from your computer (`ftp://<vita-ip>:1337`) and upload
+   the file to `ux0:/` — or use a USB cable (SELECT toggles USB mode too).
+4. On the Vita, navigate to the file in VitaShell, press **X** → **Install**
+   (accept the extended permissions prompt).
+5. Exit VitaShell — **Skyrift** now has a bubble on your LiveArea. Enjoy!
+
 ## Story
 
 The Sunreef Isles float on the Old Wind. The Sky Tyrant shattered the Great
@@ -72,7 +85,7 @@ make
 ./skyrift
 ```
 
-## PS Vita build (.vpk)
+## PS Vita build (.vpk) — from source
 
 ### 1. Install VitaSDK (once)
 

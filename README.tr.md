@@ -11,6 +11,19 @@ PS Vita ve masaüstü için özgün, süzülmeli pixel-art macera oyunu.
 
 ![screenshot](screenshot.png)
 
+## Vita'nda oyna (derleme gerekmez)
+
+1. Vita'n homebrew açık olmalı (HENkaku / h-encore² —
+   [vita.hacks.guide](https://vita.hacks.guide), ~15 dakika sürer).
+2. [Son release'ten](https://github.com/onurkuru/skyrift/releases/latest)
+   **`skyrift.vpk`** dosyasını indir.
+3. Vita'ya kopyala: **VitaShell**'de **SELECT** ile FTP'yi aç, bilgisayardan
+   `ftp://<vita-ip>:1337` adresine bağlan, dosyayı `ux0:/` içine at
+   (SELECT USB modunu da açar, kabloyla da olur).
+4. Vita'da VitaShell ile dosyaya gel, **X** → **Install** (genişletilmiş
+   izin uyarısını onayla).
+5. VitaShell'den çık — **Skyrift** LiveArea'da! İyi uçuşlar.
+
 ## Hikaye
 
 Sunreef Adaları, Kadim Rüzgar'ın üzerinde süzülür. Gök Tiranı (Sky Tyrant)
