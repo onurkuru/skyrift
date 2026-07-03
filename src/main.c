@@ -2155,7 +2155,7 @@ int main(int argc, char *argv[]) {
         else if (game_state == ST_STORY) draw_story();
         else if (game_state == ST_END) draw_end();
         else if (game_state == ST_PAUSE) draw_pause();
-        else draw_hud();
+        else if (!getenv("SKYRIFT_NOHUD")) draw_hud();
 
         /* death fade to black and back */
         if (fade > 0) {
