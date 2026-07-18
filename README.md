@@ -110,8 +110,13 @@ export PATH=$VITASDK/bin:$PATH
 ```sh
 mkdir -p build-vita && cd build-vita
 cmake .. -DBUILD_VITA=ON -DCMAKE_BUILD_TYPE=Release
-make skyrift.vpk
+make skyrift.vpk-vpk        # produces build-vita/skyrift.vpk
 ```
+
+> On macOS the VitaSDK bootstrap's toolchain URL resolver can fail SSL
+> verification (`CERTIFICATE_VERIFY_FAILED`). If it does, install `wget`
+> first (`brew install wget`) and point `VITASDK` at a writable path
+> (e.g. `$HOME/vitasdk`) before running `./bootstrap-vitasdk.sh`.
 
 ### 3. Install on the Vita
 

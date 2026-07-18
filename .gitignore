@@ -2,3 +2,5 @@ build/
 build-vita/
 .DS_Store
 skyrift-dev
+vitasdk-*.log
+skyrift-dev
