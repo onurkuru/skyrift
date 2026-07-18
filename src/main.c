@@ -1584,12 +1584,23 @@ static void draw_enemy(Enemy *e) {
         break;
     }
     case T_FROG: {
-        SDL_Texture *t = e->state == 1 ? tex_frog_jump : tex_frog_idle;
-        int nf = e->state == 1 ? 3 : 4;
-        SDL_Rect src = {(int)(ticks / 8 % nf) * 35, 0, 35, 32};
+        /* idle frames 1-3 are the croak balloon: only shown while the frog
+           puffs up to telegraph its hop - calm frogs stay on frame 0 */
+        SDL_Texture *t; SDL_Rect src;
+        if (e->state == 1) {
+            t = tex_frog_jump;
+            src = (SDL_Rect){(int)(ticks / 8 % 3) * 35, 0, 35, 32};
+        } else {
+            int fi = 0;
+            if (e->state == 2) {
+                fi = 3 - e->timer / 9;
+                if (fi < 1) fi = 1;
+                if (fi > 3) fi = 3;
+            }
+            t = tex_frog_idle;
+            src = (SDL_Rect){fi * 35, 0, 35, 32};
+        }
         if (e->flash > 0) SDL_SetTextureColorMod(t, 255, 80, 80);
-        else if (e->state == 2 && (ticks / 4) % 2)
-            SDL_SetTextureColorMod(t, 255, 210, 120);   /* pre-hop warning blink */
         else SDL_SetTextureColorMod(t, 255, 255, 255);
         SDL_Rect d = {(int)(e->x - cam_x + g_shx) - 8,
                       (int)(e->y - cam_y + g_shy) - 12, 35, 32};
@@ -1625,8 +1636,13 @@ static void draw_enemy(Enemy *e) {
         if (e->kind == 0) {            /* MIRE KING: giant frog */
             int air = !hard_at(e->x + bw / 2, e->y + bh + 1);
             bt = air ? tex_frog_jump : tex_frog_idle;
-            int nf = air ? 3 : 4;
-            src_r = (SDL_Rect){(int)(ticks / 8 % nf) * 35, 0, 35, 32};
+            int fi;
+            if (air) fi = (int)(ticks / 8 % 3);
+            else if (boss_active && e->timer < 20) {
+                fi = 1 + (19 - e->timer) / 7;      /* puff = leap telegraph */
+                if (fi > 3) fi = 3;
+            } else fi = 0;
+            src_r = (SDL_Rect){fi * 35, 0, 35, 32};
             d = (SDL_Rect){(int)(e->x - cam_x + g_shx) - 18,
                            (int)(e->y - cam_y + g_shy) - 30, 84, 77};
         } else if (e->kind == 1) {     /* RUST FANG: giant opossum */
