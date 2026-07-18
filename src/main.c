@@ -157,7 +157,7 @@ static SDL_Texture *tex_sq_idle, *tex_sq_run, *tex_sq_jump;
 static SDL_Texture *tex_death, *tex_gem, *tex_cherry;
 static SDL_Texture *tex_tileset, *tex_back, *tex_middle;
 static SDL_Texture *tex_tree, *tex_bush, *tex_shroom, *tex_platform;
-static SDL_Texture *tex_heart, *tex_glow, *tex_vignette;
+static SDL_Texture *tex_heart, *tex_glow, *tex_vignette, *tex_shadow;
 static int back_w, back_h, mid_w, mid_h;
 static Player player;
 static Bullet bullets[MAX_BULLETS];
@@ -188,6 +188,21 @@ static int kills;
 enum { ST_TITLE, ST_STORY, ST_PLAY, ST_PAUSE, ST_END };
 static int game_state = ST_TITLE;
 static int fade;                     /* death transition: 50..26 out, 25..0 in */
+static int freeze;                   /* hit-stop frames (render-only pause) */
+static int intro_life;               /* isle intro card timer */
+static int gem_pop;                  /* HUD gem icon bounce on pickup */
+static float muzzle_x, muzzle_y;     /* shot flash */
+static int muzzle_t;
+typedef struct { float x, y; int life, facing; } Ghost;
+static Ghost ghosts[6];              /* dash afterimages */
+
+/* one flavor line per isle, shown on the intro card */
+static const char *ISLE_SUB[10] = {
+    "LEARN THE WIND", "ECHOES IN THE DARK", "THE MIRE KING STIRS",
+    "TIDES BELOW", "RUST FANG PROWLS", "WHAT THE STORM LEFT",
+    "THE GALE WRAITH WAITS", "DONT LOOK DOWN", "RIDE THE RISING WIND",
+    "RELIGHT THE BEACON",
+};
 static unsigned long play_ticks;     /* gameplay time (for the clock) */
 #define MAX_CHECKPOINTS 4
 static Checkpoint checkpoints[MAX_CHECKPOINTS];
@@ -205,7 +220,8 @@ static int jump_prev, shoot_prev, dash_prev;
    no sound files needed, works identically on desktop and Vita. */
 #define A_RATE 22050
 enum { S_JUMP, S_FLY, S_SHOOT, S_DASH, S_HIT, S_KILL, S_HURT, S_GEM,
-       S_CHERRY, S_CHECK, S_LEVEL, S_DOOR, S_ENTER, S_BOSS, S_WIN, S_START, S_N };
+       S_CHERRY, S_CHECK, S_LEVEL, S_DOOR, S_ENTER, S_BOSS, S_WIN, S_START,
+       S_STOMP, S_N };
 static Sint16 *sbuf[S_N];
 static int slen[S_N];
 static struct { int id, pos, on; } voices[8];
@@ -326,6 +342,9 @@ static void f_win(Sint16 *b)   { int a = 0;
                                    0.4f, 0.22f, 1, 0.02f); }
 static void f_start(Sint16 *b) { int a = T(b, 0, 440, 440, 0.09f, 0.45f, 3, 0.004f);
                                  T(b, a, 880, 880, 0.18f, 0.45f, 3, 0.004f); }
+static void f_stomp(Sint16 *b) { T(b, 0, 150, 60, 0.08f, 0.5f, 0, 0.002f);
+                                 T(b, (int)(0.03f * A_RATE), 250, 720,
+                                   0.12f, 0.4f, 3, 0.01f); }
 
 static void synth_make(int id, float total, void (*fill)(Sint16 *)) {
     slen[id] = (int)(total * A_RATE);
@@ -375,6 +394,7 @@ static void audio_init(void) {
     synth_make(S_LEVEL, 0.6f, f_level);  synth_make(S_DOOR, 0.7f, f_door);
     synth_make(S_ENTER, 0.4f, f_enter);  synth_make(S_BOSS, 0.72f, f_boss);
     synth_make(S_WIN, 1.0f, f_win);      synth_make(S_START, 0.28f, f_start);
+    synth_make(S_STOMP, 0.22f, f_stomp);
     music_make();
     SDL_PauseAudioDevice(adev, 0);
 }
@@ -460,6 +480,26 @@ static SDL_Texture *make_glow(int size) {
     SDL_FreeSurface(s);
     free(pix);
     SDL_SetTextureBlendMode(t, SDL_BLENDMODE_ADD);
+    return t;
+}
+
+/* soft black blob for ground shadows (alpha-blended, unlike the additive glow) */
+static SDL_Texture *make_shadow(int size) {
+    Uint32 *pix = malloc(sizeof(Uint32) * size * size);
+    float r = size / 2.0f;
+    for (int y = 0; y < size; y++)
+        for (int x = 0; x < size; x++) {
+            float dx = x - r + 0.5f, dy = y - r + 0.5f;
+            float d = sqrtf(dx * dx + dy * dy) / r;
+            float a = d >= 1.0f ? 0 : (1.0f - d);
+            pix[y * size + x] = ((Uint32)(Uint8)(a * 255) << 24) | 0x000000;
+        }
+    SDL_Surface *s = SDL_CreateRGBSurfaceWithFormatFrom(
+        pix, size, size, 32, size * 4, SDL_PIXELFORMAT_ARGB8888);
+    SDL_Texture *t = SDL_CreateTextureFromSurface(g_ren, s);
+    SDL_FreeSurface(s);
+    free(pix);
+    SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
     return t;
 }
 
@@ -758,10 +798,13 @@ place:
     player.vx = player.vy = 0; player.facing = 1; player.anim = 0;
     player.dash = player.dash_cd = 0;
     combo = 0; combo_timer = 0;
+    intro_life = 170;                  /* isle name card */
     /* clear leftover projectiles/popups/fx from the previous isle */
     memset(bullets, 0, sizeof bullets);
     memset(popups, 0, sizeof popups);
     memset(fxs, 0, sizeof fxs);
+    memset(ghosts, 0, sizeof ghosts);
+    muzzle_t = 0;
 }
 
 static void game_reset(void) {
@@ -837,6 +880,9 @@ static void fire_bullet(void) {
         if (vertical) { fire_one(ox, oy, -1.2f, vy); fire_one(ox, oy, 1.2f, vy); }
         else          { fire_one(ox, oy, vx, -1.2f); fire_one(ox, oy, vx, 1.2f); }
     }
+    muzzle_x = ox + (vertical ? 0 : (float)player.facing * 8);
+    muzzle_y = oy + (vertical ? (vy > 0 ? 8 : -8) : 0);
+    muzzle_t = 4;
 }
 
 static void update_player(void) {
@@ -911,7 +957,20 @@ static void update_player(void) {
         player.vx = player.dashx * 5.0f;
         player.vy = 0;
         spawn_particles(player.x + 6, player.y + 9, 0xFFF5F1E8, 1);
+        if (player.dash % 3 == 0) {           /* afterimage trail */
+            for (int i = 0; i < 6; i++)
+                if (ghosts[i].life <= 0) {
+                    ghosts[i].x = player.x; ghosts[i].y = player.y;
+                    ghosts[i].life = 12; ghosts[i].facing = player.facing;
+                    break;
+                }
+        }
     }
+
+    /* little dust puffs while sprinting on the ground */
+    if (player.on_ground && fabsf(player.vx) > 1.2f && ticks % 9 == 0)
+        spawn_particles(player.x + PHIT_W / 2.0f - player.facing * 5,
+                        player.y + PHIT_H - 1, 0xB0E7DCC2, 1);
 
     float nx = player.x + player.vx;
     if (!hard_box(nx, player.y, PHIT_W, PHIT_H)) player.x = nx;
@@ -962,6 +1021,10 @@ static void update_player(void) {
     if (player.inv > 0) player.inv--;
     if (combo_timer > 0) { if (--combo_timer == 0) combo = 0; }
     if (banner_life > 0) banner_life--;
+    if (muzzle_t > 0) muzzle_t--;
+    if (gem_pop > 0) gem_pop--;
+    for (int i = 0; i < 6; i++)
+        if (ghosts[i].life > 0) ghosts[i].life--;
 
     if (player.y > MAP_H * TILE + 60 && fade == 0) {
         spawn_particles(player.x, (float)(MAP_H * TILE), 0xFFC8384A, 12);
@@ -979,6 +1042,7 @@ static void hurt_player(void) {
     player.inv = 90;
     player.vy = -3.0f;
     shake = 5;
+    freeze = 5;
     play_sfx(S_HURT);
     spawn_particles(player.x + PHIT_W / 2.0f, player.y + PHIT_H / 2.0f, 0xFFC8384A, 8);
     if (player.hp <= 0) fade = 50;
@@ -989,6 +1053,8 @@ static void enemy_die(Enemy *e) {
     e->alive = 0;
     play_sfx(S_KILL);
     shake = e->type == T_BOSS ? 8 : 3;
+    freeze = e->type == T_BOSS ? 8 : 3;    /* hit-stop makes kills land */
+    player.dash_cd = 0;                    /* kills refresh the dash */
     spawn_fx(e->x + w / 2 - 20, e->y + h / 2 - 20);
     spawn_particles(e->x + w / 2, e->y + h / 2, 0xFF9BA0AB, 12);
     if (e->type == T_BOSS) {
@@ -1184,6 +1250,26 @@ static void update_enemies(void) {
         }
         }
 
+        /* stomp: falling onto a foe squashes it and bounces Kip skyward */
+        {
+            float feet = player.y + PHIT_H;
+            if (player.vy > 1.0f &&
+                player.x < e->x + w - 2 && player.x + PHIT_W > e->x + 2 &&
+                feet > e->y - 2 && feet < e->y + h * 0.55f) {
+                e->hp -= (e->type == T_BOSS) ? 1 : 3;
+                e->flash = 8;
+                player.vy = in_jump ? -5.8f : -3.8f;   /* hold jump = high bounce */
+                player.air_jumps = 1;                  /* stomp refreshes the air jump */
+                player.jump_t = 6;
+                play_sfx(S_STOMP);
+                freeze = 2;
+                shake = 2;
+                spawn_particles(pcx, e->y, 0xFFF5F1E8, 8);
+                if (e->hp <= 0) enemy_die(e);
+                continue;                              /* no contact damage this frame */
+            }
+        }
+
         /* contact damage: true box overlap with a little forgiveness */
         if (player.x < e->x + w - 3 && player.x + PHIT_W > e->x + 3 &&
             player.y < e->y + h - 3 && player.y + PHIT_H > e->y + 3) {
@@ -1242,6 +1328,7 @@ static void update_pickups(void) {
             fabsf((player.y + 9) - (g->y + 6)) < 14) {
             g->alive = 0;
             gems_collected++;
+            gem_pop = 10;
             play_sfx(S_GEM);
             add_score(SCORE_GEM, g->x, g->y - 4);
             spawn_particles(g->x + 7, g->y + 6, 0xFF3FB8C4, 10);
@@ -1295,6 +1382,10 @@ static void update_pickups(void) {
             play_sfx(S_CHECK);
             player.spawnx = (float)cp->x;
             player.spawny = (float)cp->y - 8;
+            if (player.hp < player.hp_max) {       /* signs patch you up */
+                player.hp = player.hp_max;
+                spawn_popup((float)cp->x - 4, (float)cp->y - 24, 0xFFC8384A, "FULL HP");
+            }
             spawn_popup((float)cp->x - 8, (float)cp->y - 14, 0xFF69B857, "CHECKPOINT!");
             spawn_particles((float)cp->x + 9, (float)cp->y + 4, 0xFF69B857, 14);
         }
@@ -1459,6 +1550,25 @@ static void draw_map(void) {
     }
 }
 
+/* soft blob under an entity, shrinking with height above the ground */
+static void draw_shadow(float cx, float feet_y, float wpx) {
+    int tx = (int)(cx / TILE), ty = (int)(feet_y / TILE);
+    int gy = -1;
+    for (int i = 0; i < 6; i++) {
+        char c = map_at(tx, ty + i);
+        if (c == '#' || c == '=') { gy = (ty + i) * TILE; break; }
+    }
+    if (gy < 0) return;
+    float dist = (float)gy - feet_y;
+    if (dist < 0) dist = 0;
+    float sc = 1.0f - dist / 96.0f;
+    if (sc <= 0.15f) return;
+    SDL_SetTextureAlphaMod(tex_shadow, (Uint8)(80 * sc));
+    SDL_Rect d = {(int)(cx - wpx * sc / 2 - cam_x + g_shx),
+                  (int)(gy - 3 - cam_y + g_shy), (int)(wpx * sc), 6};
+    SDL_RenderCopy(g_ren, tex_shadow, NULL, &d);
+}
+
 static void draw_enemy(Enemy *e) {
     float w, h; enemy_size(e, &w, &h);
     int flip = (player.x + 6 > e->x + w / 2);
@@ -1567,6 +1677,16 @@ static void draw_entities(void) {
         SDL_RenderFillRect(g_ren, &d);
     }
 
+    /* ground shadows under the cast */
+    if (game_state != ST_TITLE && game_state != ST_STORY) {
+        draw_shadow(player.x + PHIT_W / 2.0f, player.y + PHIT_H, 16);
+        for (int i = 0; i < n_enemies; i++) {
+            if (!enemies[i].alive) continue;
+            float w, h; enemy_size(&enemies[i], &w, &h);
+            draw_shadow(enemies[i].x + w / 2, enemies[i].y + h, w + 4);
+        }
+    }
+
     /* checkpoint signs (green tint once activated) */
     for (int i = 0; i < n_checkpoints; i++) {
         Checkpoint *cp = &checkpoints[i];
@@ -1605,6 +1725,7 @@ static void draw_entities(void) {
         draw_text((int)(40 - cam_x), (int)(330 - cam_y), 1, 0xCCF5F1E8, "Z: JUMP - PRESS AGAIN IN AIR");
         draw_text((int)(130 - cam_x), (int)(345 - cam_y), 1, 0xCCF5F1E8, "HOLD Z IN AIR: TAIL GLIDE");
         draw_text((int)(130 - cam_x), (int)(355 - cam_y), 1, 0xCC9BE3EA, "ON PLATFORM: DOWN+Z = DROP");
+        draw_text((int)(230 - cam_x), (int)(330 - cam_y), 1, 0xCCE8853A, "LAND ON FOES TO STOMP THEM");
     }
 
     for (int i = 0; i < n_gems; i++) {
@@ -1649,6 +1770,20 @@ static void draw_entities(void) {
         SDL_RenderFillRect(g_ren, &d);
     }
 
+    /* dash afterimages: fading tucked-ball ghosts along the dash path */
+    for (int i = 0; i < 6; i++) {
+        if (ghosts[i].life <= 0) continue;
+        SDL_SetTextureAlphaMod(tex_sq_jump, (Uint8)(ghosts[i].life * 14));
+        SDL_SetTextureColorMod(tex_sq_jump, 180, 220, 255);
+        SDL_Rect gsrc = {46, 0, 46, 43};
+        SDL_Rect gd = {(int)(ghosts[i].x - cam_x + sx) + PHIT_W / 2 - 23,
+                       (int)(ghosts[i].y - cam_y + sy) + PHIT_H - 43, 46, 43};
+        SDL_RenderCopyEx(g_ren, tex_sq_jump, &gsrc, &gd, 0, NULL,
+            ghosts[i].facing < 0 ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
+    }
+    SDL_SetTextureAlphaMod(tex_sq_jump, 255);
+    SDL_SetTextureColorMod(tex_sq_jump, 255, 255, 255);
+
     if (player.inv % 8 < 5) {
         /* Kip the glider squirrel (Sunny Land Woods player, CC0) */
         SDL_Texture *sheet;
@@ -1679,9 +1814,20 @@ static void draw_entities(void) {
         else if (player.jump_t > 0) { dw = fw - player.jump_t / 2; dh = fh + player.jump_t / 2; }
         SDL_Rect d = {(int)(player.x - cam_x + sx) + PHIT_W / 2 - dw / 2,
                       (int)(player.y - cam_y + sy) + PHIT_H - dh, dw, dh};
+        SDL_RendererFlip flip_p =
+            player.facing < 0 ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE;
+        /* 1px dark outline so Kip reads against busy foliage */
+        SDL_SetTextureColorMod(sheet, 20, 16, 30);
+        SDL_SetTextureAlphaMod(sheet, 180);
+        for (int o = 0; o < 4; o++) {
+            static const int ox[4] = {-1, 1, 0, 0}, oy[4] = {0, 0, -1, 1};
+            SDL_Rect od = {d.x + ox[o], d.y + oy[o], d.w, d.h};
+            SDL_RenderCopyEx(g_ren, sheet, &src_r, &od, angle, NULL, flip_p);
+        }
+        SDL_SetTextureColorMod(sheet, 255, 255, 255);
+        SDL_SetTextureAlphaMod(sheet, 255);
         /* woods squirrel art faces right; mirror when heading left */
-        SDL_RenderCopyEx(g_ren, sheet, &src_r, &d, angle, NULL,
-            player.facing < 0 ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
+        SDL_RenderCopyEx(g_ren, sheet, &src_r, &d, angle, NULL, flip_p);
     }
 
     /* floating score popups */
@@ -1731,6 +1877,14 @@ static void draw_glow_pass(void) {
         SDL_Rect d = {(int)(player.x - cam_x) - 10, (int)(player.y - cam_y) - 8, 32, 32};
         SDL_RenderCopy(g_ren, tex_glow, NULL, &d);
     }
+    if (muzzle_t > 0) {
+        SDL_SetTextureColorMod(tex_glow, 255, 230, 140);
+        SDL_SetTextureAlphaMod(tex_glow, (Uint8)(muzzle_t * 45));
+        int r = 7 + (4 - muzzle_t) * 2;
+        SDL_Rect d = {(int)(muzzle_x - cam_x) - r, (int)(muzzle_y - cam_y) - r,
+                      r * 2, r * 2};
+        SDL_RenderCopy(g_ren, tex_glow, NULL, &d);
+    }
 }
 
 /* dark jungle fringe in front of the action = depth on both sides.
@@ -1759,9 +1913,10 @@ static void draw_hud(void) {
         SDL_RenderFillRect(g_ren, &full);
     }
 
-    /* gems: icon + count */
+    /* gems: icon + count (icon pops when one is banked) */
     SDL_Rect gsrc = {0, 0, 15, 13};
-    SDL_Rect gi = {6, 17, 15, 13};
+    int pop = gem_pop > 0 ? gem_pop / 3 : 0;
+    SDL_Rect gi = {6 - pop / 2, 17 - pop / 2, 15 + pop, 13 + pop};
     SDL_RenderCopy(g_ren, tex_gem, &gsrc, &gi);
     snprintf(buf, sizeof buf, "%d/%d", gems_collected, total_gems);
     draw_text(24, 21, 1, 0xFF9BE3EA, buf);
@@ -1829,6 +1984,25 @@ static void draw_hud(void) {
         snprintf(buf, sizeof buf, "CLEAR! SCORE %d TIME %lu:%02lu",
                  score, secs / 60, secs % 60);
         draw_text(LOGICAL_W / 2 - text_w(buf, 1) / 2, 30, 1, 0xFFF2CE45, buf);
+    }
+
+    /* isle intro card: number, name, flavor line */
+    if (intro_life > 0) {
+        Uint32 base = intro_life < 40 ? ((Uint32)(intro_life * 6) << 24) : 0xF0000000;
+        char num[16];
+        snprintf(num, sizeof num, "ISLE %d", cur_level + 1);
+        const char *nm = LEVEL_CFG[cur_level].name;
+        SDL_SetRenderDrawBlendMode(g_ren, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(g_ren, 8, 12, 24,
+                               (Uint8)(((base >> 24) & 0xFF) / 3));
+        SDL_Rect band = {0, 74, LOGICAL_W, 56};
+        SDL_RenderFillRect(g_ren, &band);
+        draw_text(LOGICAL_W / 2 - text_w(num, 1) / 2, 80, 1,
+                  (base & 0xFF000000) | 0x9BE3EA, num);
+        draw_text(LOGICAL_W / 2 - text_w(nm, 2) / 2, 92, 2,
+                  (base & 0xFF000000) | 0xF2CE45, nm);
+        draw_text(LOGICAL_W / 2 - text_w(ISLE_SUB[cur_level], 1) / 2, 112, 1,
+                  (base & 0xFF000000) | 0xF5F1E8, ISLE_SUB[cur_level]);
     }
 
     /* announcement banner */
@@ -1933,11 +2107,12 @@ static void draw_pause(void) {
         "MOVE: ARROWS / STICK",
         "JUMP / AIR JUMP: Z / CROSS",
         "HOLD JUMP IN AIR: GLIDE",
+        "STOMP: LAND ON FOES",
         "SHOOT: X / SQUARE",
-        "DASH: C / CIRCLE",
+        "DASH: C / CIRCLE - KILLS RESET IT",
         "PAUSE: P / START",
     };
-    for (int i = 0; i < 6; i++)
+    for (int i = 0; i < 7; i++)
         draw_text(LOGICAL_W / 2 - text_w(help[i], 1) / 2, 125 + i * 11, 1,
                   0xFF9BE3EA, help[i]);
 }
@@ -2014,6 +2189,19 @@ static int run_tests(void) {
     if (after - before != 2) { printf("FAIL double-shot: %d bullets\n", after - before); fail++; }
     else printf("ok  double-shot (%d bullets)\n", after - before);
 
+    /* stomp: falling onto a frog squashes it and bounces Kip */
+    e = &enemies[0];
+    memset(e, 0, sizeof *e);
+    e->alive = 1; e->type = T_FROG; e->hp = 2;
+    e->x = 146; e->y = 380; e->homex = e->x; e->homey = e->y;   /* on the ground */
+    player.x = 148; player.y = 363; player.vy = 3; player.on_ground = 0;
+    player.air_jumps = 0; player.inv = 0;
+    update_enemies();
+    if (e->alive || player.vy >= 0 || player.air_jumps != 1)
+        { printf("FAIL stomp: alive=%d vy=%.1f jumps=%d\n",
+                 e->alive, player.vy, player.air_jumps); fail++; }
+    else printf("ok  stomp (frog squashed, bounce vy=%.1f, air jump back)\n", player.vy);
+
     /* full jump + air jump must clear a 5-tile climb (80px): the maps
        are validated against exactly this envelope by genlevels.py */
     player.x = 150; player.y = 300; player.vy = 0; player.on_ground = 1;
@@ -2086,6 +2274,7 @@ int main(int argc, char *argv[]) {
     tex_door_open   = load_png("door-opened.png", NULL, NULL);
     tex_heart       = make_sprite(SPR_HEART, 8, 8);
     tex_glow        = make_glow(64);
+    tex_shadow      = make_shadow(48);
     tex_vignette    = make_vignette();
 
     audio_init();
@@ -2136,7 +2325,7 @@ int main(int argc, char *argv[]) {
                 if (in_jump && !jump_prev) {
                     game_state = ST_PLAY;
                     play_sfx(S_START);
-                    show_banner(LEVEL_CFG[0].name);
+                    intro_life = 170;      /* isle card handles the reveal */
                 }
                 jump_prev = in_jump;
                 update_particles();
@@ -2163,13 +2352,14 @@ int main(int argc, char *argv[]) {
                                 fade = 0;
                             } else {
                                 load_level(cur_level + 1);
-                                show_banner(LEVEL_CFG[cur_level].name);
                                 cam_x = player.x - LOGICAL_W / 2.0f;
                                 cam_y = player.y - LOGICAL_H / 2.0f;
                             }
                         } else respawn();
                     }
                     update_particles();
+                } else if (freeze > 0) {
+                    freeze--;                     /* hit-stop: world holds a beat */
                 } else {
                     update_player();
                     update_enemies();
@@ -2177,6 +2367,7 @@ int main(int argc, char *argv[]) {
                     update_pickups();
                     update_particles();
                 }
+                if (intro_life > 0) intro_life--;
                 update_camera();
                 play_ticks++;
             }

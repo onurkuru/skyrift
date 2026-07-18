@@ -67,13 +67,20 @@ Tyrant on isle 10 and relight the Beacon.
 
 - Press jump again in the air → **double jump** (tucks into a spinning ball);
   **hold jump in the air → tail glide** (slow fall, strong air control)
-- Brick platforms are one-way; press down+jump on top to drop through
+- **Stomp**: land on a foe to squash it — hold jump for a high bounce, and
+  the stomp refreshes your air jump for big chain routes
+- Kills reset the dash cooldown; brick platforms are one-way
+  (down+jump drops through)
 - **Score & combo**: gem +100, enemy +40/50, boss +1000; chained kills multiply
 - **Skill levels**: LV2 dash · LV3 double shot · LV4 rapid fire · LV5 +1 max HP · LV6 triple shot
-- **Enemies**: eagle (chases), frog (ambush hops), opossum (patrols) + 4 bosses with minion waves and telegraphed attacks
-- Cherries heal; checkpoint signs move your respawn point
+- **Enemies**: eagle (chases, speed-capped), frog (crouch-telegraphs its hop),
+  opossum (patrols) + 4 bosses with minion waves and telegraphed attacks
+- Cherries heal; checkpoint signs move your respawn point **and heal you full**
 - Best score persists on device; completion time shown at the end
-- Coyote time, variable jump height, squash & stretch, gem magnet
+- Coyote time, variable jump height, squash & stretch, gem magnet, hit-stop,
+  ground shadows, dash afterimages, isle intro cards
+- Every isle is machine-validated: each gem and door is reachable from both
+  the spawn and the door — no dead ends, no soft-locks
 
 ## Desktop build
 
