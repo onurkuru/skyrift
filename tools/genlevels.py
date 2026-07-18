@@ -19,6 +19,72 @@ def grounded(g,r,c,ch):
     put(g,r,c,ch)
 
 levels=[]; cfgs=[]
+
+# --- reachability validator ------------------------------------------------
+# Jump model for the tuned physics (JUMP_VEL -6.3, air jump -5.4, glide):
+# single jump ~3 tiles, jump+air-jump ~5 tiles, glide gives long flat reach.
+def validate(s, name):
+    solid=lambda r,c: 0<=r<H and 0<=c<W and s[r][c] in '#='
+    def standable(r,c):
+        if not (0<=r<H-1 and 0<=c<W): return False
+        if s[r][c] in '#=': return False
+        if not solid(r+1,c): return False
+        if r>0 and s[r-1][c]=='#': return False      # need 2-tile headroom
+        return True
+    stand={(r,c) for r in range(H-1) for c in range(W) if standable(r,c)}
+    def drop_to_stand(r,c):
+        while r<H-1:
+            if (r,c) in stand: return (r,c)
+            r+=1
+        return None
+    def find(ch):
+        for r in range(H):
+            c=s[r].find(ch)
+            if c>=0: return (r,c)
+        return None
+    start=drop_to_stand(*find('P'))
+    assert start, f"{name}: P has no footing"
+    # BFS over standable cells with the jump-reach envelope
+    from collections import deque
+    seen={start}; q=deque([start])
+    def reach(r,c,r2,c2):
+        rise=r-r2; dc=abs(c2-c)
+        if rise<=0: return dc<=11                    # drop / level, glide reach
+        if rise<=2: return dc<=7
+        if rise<=3: return dc<=6
+        if rise<=4: return dc<=5
+        if rise<=5: return dc<=3                     # needs a clean double jump
+        return False
+    cand=sorted(stand)
+    while q:
+        r,c=q.popleft()
+        for r2,c2 in cand:
+            if (r2,c2) in seen: continue
+            if reach(r,c,r2,c2): seen.add((r2,c2)); q.append((r2,c2))
+    door=drop_to_stand(*find('D'))
+    assert door in seen, f"{name}: door unreachable from spawn"
+    # every gem must stay collectible from spawn AND from the door area,
+    # so descending early can never soft-lock the gem requirement
+    seen_door={door}; q=deque([door])
+    while q:
+        r,c=q.popleft()
+        for r2,c2 in cand:
+            if (r2,c2) in seen_door: continue
+            if reach(r,c,r2,c2): seen_door.add((r2,c2)); q.append((r2,c2))
+    for label,vis in (("spawn",seen),("door",seen_door)):
+        for r in range(H):
+            for c in range(W):
+                if s[r][c]!='*': continue
+                ok=any((0<=sr-r<=5 and abs(sc-c)<=4) or (sr-r<0 and abs(sc-c)<=9)
+                       for sr,sc in vis)
+                assert ok, f"{name}: gem at ({r},{c}) unreachable from {label}"
+    for ch in 'CH':
+        for r in range(H):
+            for c in range(W):
+                if s[r][c]!=ch: continue
+                cell=drop_to_stand(r,c)
+                assert cell in seen, f"{name}: {ch} at ({r},{c}) unreachable"
+
 def add(g,name,req,boss,back,jungle):
     s=[''.join(r) for r in g]
     assert sum(r.count('P') for r in s)==1, name+" P"
@@ -27,6 +93,7 @@ def add(g,name,req,boss,back,jungle):
     assert (nb==1)==(boss>=0), name+" B"
     ng=sum(r.count('*') for r in s)
     assert ng>=req+3, f"{name} gems {ng} req {req}"
+    validate(s,name)
     levels.append(s); cfgs.append((name,req,boss,back,jungle))
     print(f"{name}: gems={ng} req={req} boss={boss}")
 
@@ -37,10 +104,10 @@ L1=[
 "                                              E                                           ",
 "                                          *  *  *  *                                      ",
 "                                      E                                                   ",
-"                                        =============                                   * ",
+"                                        =============                                     ",
 "                                                         *                                ",
-"                                 * *                                E                     ",
-"    *                                                   =====                             ",
+"                                 * *                      *         E                     ",
+"                                                        =====                             ",
 "                                =====                                                     ",
 "                           *                          E                                   ",
 "                      E                                        ====                       ",
@@ -51,7 +118,7 @@ L1=[
 "               *                                                                          ",
 "                                                                           ====           ",
 "              ====                                                                *       ",
-"          *                                                                               ",
+"          *                                                                        *      ",
 "                                                                                 ====     ",
 "        ====                  E                                                           ",
 "                                                                                          ",
@@ -124,6 +191,7 @@ vseg(g,40,8,11); vseg(g,41,8,11)         # dividers
 vseg(g,56,14,18); vseg(g,57,14,18)
 vseg(g,28,21,25); vseg(g,29,21,25)
 hseg(g,9,76,79,'='); hseg(g,16,8,11,'='); hseg(g,23,74,77,'=')
+hseg(g,19,70,73,'='); hseg(g,12,14,17,'=')   # climb-back ladders (no one-way trips)
 put(g,4,4,'P'); grounded(g,25,84,'D')
 for r,c in [(4,14),(4,30),(4,48),(4,64),(4,80),(10,10),(10,30),(10,52),(10,70),
             (16,26),(16,44),(16,62),(16,80),(22,8),(22,40),(22,58),(25,14),(25,50)]: put(g,r,c,'*')
@@ -143,7 +211,7 @@ put(g,24,4,'P')
 grounded(g,7,86,'D')
 put(g,5,78,'B')
 for r,c in [(24,10),(20,18),(20,26),(17,10),(16,32),(16,40),(13,24),(12,46),
-            (12,54),(9,38),(8,60),(8,66),(5,52),(3,30),(3,10),(6,74)]: put(g,r,c,'*')
+            (12,54),(9,38),(8,60),(8,66),(5,52),(10,24),(23,6),(6,74)]: put(g,r,c,'*')
 for r,c in [(20,22),(16,36),(12,50),(8,64),(4,44)]: put(g,r,c,'E')
 grounded(g,21,16,'F'); grounded(g,13,44,'F')
 grounded(g,17,30,'O'); grounded(g,9,58,'O')
@@ -197,6 +265,8 @@ for top,c0,c1 in isl: fill(g,top,top+1,c0,c1)
 bridges=[(19,9,13),(20,20,24),(19,31,35),(19,42,46),(18,53,57),(18,64,68),(17,75,79)]
 for row,c0,c1 in bridges: hseg(g,row,c0,c1,'=')
 hseg(g,8,20,26,'='); hseg(g,6,40,46,'='); hseg(g,8,60,66,'=')      # bonus high line
+hseg(g,14,18,21,'='); hseg(g,10,14,17,'=')                         # ladder up to it
+hseg(g,7,32,35,'='); hseg(g,6,50,53,'=')                           # hops along the top
 put(g,18,4,'P'); grounded(g,17,84,'D')
 for r,c in [(18,16),(16,27),(19,38),(15,49),(18,60),(14,71),(17,82),
             (17,11),(18,22),(17,33),(17,44),(16,55),(16,66),(15,77),
@@ -235,7 +305,7 @@ put(g,25,5,'P')
 grounded(g,5,82,'D')
 put(g,3,76,'B')
 for r,c in [(22,21),(19,31),(22,41),(16,46),(13,37),(10,27),(7,37),(10,53),
-            (7,64),(13,60),(16,71),(10,79),(20,13),(11,43),(5,55),(2,10),(8,8),(20,86)]: put(g,r,c,'*')
+            (7,64),(13,60),(16,71),(10,79),(20,13),(11,43),(5,55),(25,10),(17,21),(20,86)]: put(g,r,c,'*')
 for r,c in [(22,26),(17,40),(11,32),(10,58),(14,70),(4,50)]: put(g,r,c,'E')
 grounded(g,5,74,'F'); grounded(g,20,32,'O')
 grounded(g,9,47,'H'); grounded(g,3,65,'H')
@@ -266,8 +336,8 @@ out.append("};")
 out.append("")
 out.append("typedef struct { const char *name; int hp; } BossCfg;")
 out.append("static const BossCfg BOSS_CFG[4] = {")
-out.append('    {"MIRE KING", 30}, {"RUST FANG", 35},')
-out.append('    {"GALE WRAITH", 42}, {"SKY TYRANT", 50},')
+out.append('    {"MIRE KING", 24}, {"RUST FANG", 28},')
+out.append('    {"GALE WRAITH", 34}, {"SKY TYRANT", 42},')
 out.append("};")
 open(__file__.rsplit("/tools/",1)[0]+"/src/levels.h","w").write("\n".join(out)+"\n")
 print("levels.h written,", len(levels), "levels")

@@ -43,8 +43,9 @@
 #define N_DUST      24
 #define N_LEAVES    28
 #define GRAVITY     0.35f
-#define MOVE_SPEED  1.6f
-#define JUMP_VEL   -5.4f
+#define MOVE_SPEED  2.0f
+#define JUMP_VEL   -6.3f
+#define AIRJUMP_VEL -5.4f
 #define FLY_SPEED   2.0f
 #define BULLET_SPEED 5.0f
 
@@ -752,7 +753,8 @@ place:
         leaves[i].color = leaf_cols[rand() % 4];
     }
     player.hp = player.hp_max;
-    player.inv = 0; player.gliding = 0; player.air_jumps = 1; player.spin_t = 0;
+    player.inv = 60;   /* short grace after entering an isle */
+    player.gliding = 0; player.air_jumps = 1; player.spin_t = 0;
     player.vx = player.vy = 0; player.facing = 1; player.anim = 0;
     player.dash = player.dash_cd = 0;
     combo = 0; combo_timer = 0;
@@ -895,7 +897,7 @@ static void update_player(void) {
         } else if (player.air_jumps > 0) {
             /* air jump: tuck into a ball and kick off the wind */
             player.air_jumps--;
-            player.vy = -4.6f;
+            player.vy = AIRJUMP_VEL;
             player.spin_t = 22;
             play_sfx(S_FLY);
             spawn_particles(player.x + PHIT_W / 2.0f, player.y + PHIT_H, 0xFFF5F1E8, 6);
@@ -921,6 +923,9 @@ static void update_player(void) {
         float old_feet = player.y + PHIT_H - 1;
         float ny = player.y + player.vy;
         if (landing_box(player.x, ny, PHIT_W, PHIT_H, old_feet, player.drop == 0)) {
+            /* snap feet onto the tile top so the squirrel never hovers */
+            int fty = (int)((ny + PHIT_H - 1) / TILE);
+            player.y = (float)(fty * TILE - PHIT_H);
             player.on_ground = 1;
             player.gliding = 0;
             player.air_jumps = 1;
@@ -1015,14 +1020,18 @@ static void update_enemies(void) {
 
         switch (e->type) {
         case T_EAGLE:
-            if (dist < 110.0f && dist > 1.0f) {
-                e->vx += (dx / dist) * 0.06f;
-                e->vy += (dy / dist) * 0.06f;
+            if (dist < 100.0f && dist > 1.0f) {
+                e->vx += (dx / dist) * 0.05f;
+                e->vy += (dy / dist) * 0.05f;
             } else {
                 e->vx += (e->homex - e->x) * 0.002f;
                 e->vy += (e->homey - e->y) * 0.002f;
             }
             e->vx *= 0.96f; e->vy *= 0.96f;
+            {   /* cap chase speed so eagles stay dodgeable */
+                float sp = sqrtf(e->vx * e->vx + e->vy * e->vy);
+                if (sp > 1.7f) { e->vx *= 1.7f / sp; e->vy *= 1.7f / sp; }
+            }
             {
                 float ex = e->x + e->vx;
                 if (!hard_at(ex + w / 2, e->y + h / 2)) e->x = ex;
@@ -1040,15 +1049,23 @@ static void update_enemies(void) {
             if (grounded) {
                 e->vx = 0;
                 if (e->timer > 0) e->timer--;
-                if (e->timer == 0 && dist < 150.0f) {
-                    e->vy = -4.2f;
-                    e->vx = (dx > 0 ? 1 : -1) * 1.5f;
-                    e->timer = 110;
-                    e->state = 1;
+                if (e->state == 2) {
+                    /* crouched: leap once the telegraph runs out */
+                    if (e->timer == 0) {
+                        e->vy = -4.4f;
+                        e->vx = (dx > 0 ? 1 : -1) * 1.4f;
+                        e->timer = 130;
+                        e->state = 1;
+                    }
+                } else {
+                    e->state = 0;
+                    if (e->timer == 0 && dist < 120.0f) {
+                        e->state = 2;      /* crouch telegraph before the hop */
+                        e->timer = 26;
+                    }
                 }
                 if (e->vy > 0) e->vy = 0;
             } else e->state = 1;
-            if (grounded && e->vy >= 0) e->state = 0;
             float ex = e->x + e->vx;
             if (!hard_box(ex, e->y, w, h)) e->x = ex; else e->vx = 0;
             float ey = e->y + e->vy;
@@ -1167,10 +1184,13 @@ static void update_enemies(void) {
         }
         }
 
-        /* contact damage */
-        if (fabsf(pcx - (e->x + w / 2)) < (w / 2 + 5) &&
-            fabsf(pcy - (e->y + h / 2)) < (h / 2 + 6))
+        /* contact damage: true box overlap with a little forgiveness */
+        if (player.x < e->x + w - 3 && player.x + PHIT_W > e->x + 3 &&
+            player.y < e->y + h - 3 && player.y + PHIT_H > e->y + 3) {
+            if (player.inv == 0 && fade == 0)
+                player.vx = (pcx < ecx) ? -2.5f : 2.5f;   /* knock away */
             hurt_player();
+        }
     }
 }
 
@@ -1454,10 +1474,12 @@ static void draw_enemy(Enemy *e) {
         break;
     }
     case T_FROG: {
-        SDL_Texture *t = e->state ? tex_frog_jump : tex_frog_idle;
-        int nf = e->state ? 3 : 4;
+        SDL_Texture *t = e->state == 1 ? tex_frog_jump : tex_frog_idle;
+        int nf = e->state == 1 ? 3 : 4;
         SDL_Rect src = {(int)(ticks / 8 % nf) * 35, 0, 35, 32};
         if (e->flash > 0) SDL_SetTextureColorMod(t, 255, 80, 80);
+        else if (e->state == 2 && (ticks / 4) % 2)
+            SDL_SetTextureColorMod(t, 255, 210, 120);   /* pre-hop warning blink */
         else SDL_SetTextureColorMod(t, 255, 255, 255);
         SDL_Rect d = {(int)(e->x - cam_x + g_shx) - 8,
                       (int)(e->y - cam_y + g_shy) - 12, 35, 32};
@@ -1657,9 +1679,9 @@ static void draw_entities(void) {
         else if (player.jump_t > 0) { dw = fw - player.jump_t / 2; dh = fh + player.jump_t / 2; }
         SDL_Rect d = {(int)(player.x - cam_x + sx) + PHIT_W / 2 - dw / 2,
                       (int)(player.y - cam_y + sy) + PHIT_H - dh, dw, dh};
-        /* woods squirrel art faces left */
+        /* woods squirrel art faces right; mirror when heading left */
         SDL_RenderCopyEx(g_ren, sheet, &src_r, &d, angle, NULL,
-            player.facing > 0 ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
+            player.facing < 0 ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
     }
 
     /* floating score popups */
@@ -1992,6 +2014,29 @@ static int run_tests(void) {
     if (after - before != 2) { printf("FAIL double-shot: %d bullets\n", after - before); fail++; }
     else printf("ok  double-shot (%d bullets)\n", after - before);
 
+    /* full jump + air jump must clear a 5-tile climb (80px): the maps
+       are validated against exactly this envelope by genlevels.py */
+    player.x = 150; player.y = 300; player.vy = 0; player.on_ground = 1;
+    player.air_jumps = 1; player.coyote = 0; player.drop = 0; player.dash = 0;
+    {
+        float top = 300;
+        int air_done = 0;
+        in_jump = 1; jump_prev = 0;
+        update_player();                      /* ground jump */
+        for (int i = 0; i < 120; i++) {
+            if (!air_done && player.vy > -0.5f) { jump_prev = 0; air_done = 1; }
+            else jump_prev = 1;
+            in_jump = 1;
+            update_player();
+            if (player.y < top) top = player.y;
+            if (air_done && player.vy > 1.0f) break;
+        }
+        if (300 - top < 80.0f)
+            { printf("FAIL double-jump height: %.1fpx\n", 300 - top); fail++; }
+        else printf("ok  double-jump height (%.1fpx >= 80px)\n", 300 - top);
+    }
+    in_jump = 0; jump_prev = 0;
+
     printf(fail ? "TESTS FAILED: %d\n" : "ALL TESTS PASSED\n", fail);
     return fail;
 }
@@ -2108,7 +2153,7 @@ int main(int argc, char *argv[]) {
                     if (fade == 25) {
                         if (advancing) {
                             advancing = 0;
-                            shards++;
+                            if (shards < 9) shards++;   /* nine shards, ten doors */
                             if (cur_level + 1 >= NUM_LEVELS) {
                                 victory = 1;
                                 if (score > best_score) best_score = score;
