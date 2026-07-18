@@ -178,6 +178,8 @@ static char asset_base[512];
 
 /* gamification state */
 static int score, best_score, level;
+static int shown_best;      /* record as it stood when the run began - the
+                               HUD keeps showing the target, not the live tie */
 static int combo, combo_timer;
 static char banner_txt[40];
 static int banner_life;
@@ -414,6 +416,7 @@ static void load_best(void) {
     char p[600]; save_path_get(p, sizeof p);
     FILE *f = fopen(p, "r");
     if (f) { if (fscanf(f, "%d", &best_score) != 1) best_score = 0; fclose(f); }
+    shown_best = best_score;
 }
 
 static void save_best(void) {
@@ -645,10 +648,11 @@ static void show_banner(const char *txt) {
 /* ---------- progression ---------- */
 static void add_score(int pts, float x, float y) {
     score += pts;
-    if (score > best_score) best_score = score;
-    char t[16];
-    snprintf(t, sizeof t, "+%d", pts);
-    spawn_popup(x, y, 0xFFF2CE45, t);
+    if (pts > 0) {              /* pts==0 is just a level-up recheck */
+        char t[16];
+        snprintf(t, sizeof t, "+%d", pts);
+        spawn_popup(x, y, 0xFFF2CE45, t);
+    }
 
     int new_level = 1;
     for (int i = 0; i < 5; i++)
@@ -679,7 +683,6 @@ static void add_kill_score(int base, float x, float y) {
         char t[16];
         snprintf(t, sizeof t, "+%d X%d", pts, combo);
         score += pts;
-        if (score > best_score) best_score = score;
         spawn_popup(x, y, 0xFFE8853A, t);
         /* still run level-up check */
         add_score(0, -1000, -1000);
@@ -809,6 +812,7 @@ place:
 
 static void game_reset(void) {
     player.hp_max = 3;
+    shown_best = best_score;
     level = 1; score = 0; kills = 0;
     shards = 0; victory = 0;
     play_ticks = 0;
@@ -1062,6 +1066,7 @@ static void enemy_die(Enemy *e) {
         add_kill_score(SCORE_BOSS, e->x, e->y - 10);
         show_banner(cur_level == NUM_LEVELS - 1 ? "THE TYRANT FALLS!" : "GENERAL DEFEATED!");
         play_sfx(S_WIN);
+        if (score > best_score) best_score = score;
         save_best();
         for (int i = 0; i < 6; i++)
             spawn_particles(e->x + (float)(rand() % 80 - 40),
@@ -1253,7 +1258,9 @@ static void update_enemies(void) {
         /* stomp: falling onto a foe squashes it and bounces Kip skyward */
         {
             float feet = player.y + PHIT_H;
-            if (player.vy > 1.0f &&
+            /* a glide descent counts too - drifting down onto a foe should
+               squash it, not punish the player with contact damage */
+            if ((player.vy > 1.0f || (player.gliding && player.vy > 0.3f)) &&
                 player.x < e->x + w - 2 && player.x + PHIT_W > e->x + 2 &&
                 feet > e->y - 2 && feet < e->y + h * 0.55f) {
                 e->hp -= (e->type == T_BOSS) ? 1 : 3;
@@ -1319,7 +1326,9 @@ static void update_pickups(void) {
             float dx = (player.x + 6) - (g->x + 7);
             float dy = (player.y + 9) - (g->y + 6);
             float d = sqrtf(dx * dx + dy * dy);
-            if (d < 34.0f && d > 1.0f) {
+            /* no pull through terrain: midpoint to the player must be clear */
+            if (d < 34.0f && d > 1.0f &&
+                !hard_at(g->x + 7 + dx / 2, g->y + 6 + dy / 2)) {
                 g->x += dx / d * 2.0f;
                 g->y += dy / d * 2.0f;
             }
@@ -1348,6 +1357,8 @@ static void update_pickups(void) {
             if (player.hp < player.hp_max) {
                 player.hp++;
                 spawn_popup(ch->x, ch->y - 12, 0xFFC8384A, "+1 HP");
+            } else {
+                spawn_popup(ch->x, ch->y - 12, 0xFF9BA0AB, "HP FULL");
             }
             spawn_particles(ch->x + 10, ch->y + 10, 0xFFC8384A, 10);
         }
@@ -1579,8 +1590,10 @@ static void draw_enemy(Enemy *e) {
         else SDL_SetTextureColorMod(tex_eagle, 255, 255, 255);
         SDL_Rect d = {(int)(e->x - cam_x + g_shx) - 12,
                       (int)(e->y - cam_y + g_shy) - 12, 40, 41};
+        /* face flight direction while moving; face the player when hovering */
+        int eflip = fabsf(e->vx) > 0.3f ? (e->vx > 0) : flip;
         SDL_RenderCopyEx(g_ren, tex_eagle, &src, &d, 0, NULL,
-            flip ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
+            eflip ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
         break;
     }
     case T_FROG: {
@@ -1628,8 +1641,8 @@ static void draw_enemy(Enemy *e) {
         float bw, bh; enemy_size(e, &bw, &bh);
         SDL_SetTextureColorMod(tex_glow, gc[0], gc[1], gc[2]);
         SDL_SetTextureAlphaMod(tex_glow, boss_active ? 90 : 40);
-        SDL_Rect gl = {(int)(e->x - cam_x) + (int)bw / 2 - 45,
-                       (int)(e->y - cam_y) + (int)bh / 2 - 45, 90, 90};
+        SDL_Rect gl = {(int)(e->x - cam_x + g_shx) + (int)bw / 2 - 45,
+                       (int)(e->y - cam_y + g_shy) + (int)bh / 2 - 45, 90, 90};
         SDL_RenderCopy(g_ren, tex_glow, NULL, &gl);
 
         SDL_Texture *bt; SDL_Rect src_r; SDL_Rect d;
@@ -1736,9 +1749,11 @@ static void draw_entities(void) {
         }
     }
 
-    /* tutorial hints near the spawn meadow */
-    if (cur_level == 0 && game_state == ST_PLAY) {
+    /* tutorial hints near the spawn meadow (held back until the isle
+       intro card clears so the two never overlap) */
+    if (cur_level == 0 && game_state == ST_PLAY && intro_life == 0) {
         draw_text((int)(40 - cam_x), (int)(330 - cam_y), 1, 0xCCF5F1E8, "Z: JUMP - PRESS AGAIN IN AIR");
+        draw_text((int)(40 - cam_x), (int)(340 - cam_y), 1, 0xCC9BA0AB, "P / START: PAUSE");
         draw_text((int)(130 - cam_x), (int)(345 - cam_y), 1, 0xCCF5F1E8, "HOLD Z IN AIR: TAIL GLIDE");
         draw_text((int)(130 - cam_x), (int)(355 - cam_y), 1, 0xCC9BE3EA, "ON PLATFORM: DOWN+Z = DROP");
         draw_text((int)(230 - cam_x), (int)(330 - cam_y), 1, 0xCCE8853A, "LAND ON FOES TO STOMP THEM");
@@ -1800,7 +1815,10 @@ static void draw_entities(void) {
     SDL_SetTextureAlphaMod(tex_sq_jump, 255);
     SDL_SetTextureColorMod(tex_sq_jump, 255, 255, 255);
 
-    if (player.inv % 8 < 5) {
+    /* A1: no physics runs on the title/story screens, so Kip would hang
+       frozen mid-air there - draw him only in actual play states */
+    if (game_state != ST_TITLE && game_state != ST_STORY &&
+        player.inv % 8 < 5) {
         /* Kip the glider squirrel (Sunny Land Woods player, CC0) */
         SDL_Texture *sheet;
         SDL_Rect src_r;
@@ -1823,7 +1841,10 @@ static void draw_entities(void) {
             src_r = (SDL_Rect){(int)player.anim % 6 * fw, 0, fw, fh};
         } else {
             sheet = tex_sq_idle; fw = 33; fh = 25;
-            src_r = (SDL_Rect){(int)((float)ticks * 0.1f) % 8 * fw, 0, fw, fh};
+            /* tail swish plays once, then Kip rests - the constant loop
+               made the curled-tail frames read as a ball behind him */
+            int ti = (int)((float)ticks * 0.1f) % 26;
+            src_r = (SDL_Rect){(ti < 8 ? ti : 0) * fw, 0, fw, fh};
         }
         int dw = fw, dh = fh;
         if (player.land_t > 0)      { dw = fw + player.land_t; dh = fh - player.land_t / 2; }
@@ -1929,13 +1950,23 @@ static void draw_hud(void) {
         SDL_RenderFillRect(g_ren, &full);
     }
 
-    /* gems: icon + count (icon pops when one is banked) */
+    /* gems: icon + count toward the DOOR requirement (goes green when met);
+       showing the map total here used to mislead players about the goal */
     SDL_Rect gsrc = {0, 0, 15, 13};
     int pop = gem_pop > 0 ? gem_pop / 3 : 0;
     SDL_Rect gi = {6 - pop / 2, 17 - pop / 2, 15 + pop, 13 + pop};
     SDL_RenderCopy(g_ren, tex_gem, &gsrc, &gi);
-    snprintf(buf, sizeof buf, "%d/%d", gems_collected, total_gems);
-    draw_text(24, 21, 1, 0xFF9BE3EA, buf);
+    {
+        int req = LEVEL_CFG[cur_level].req_gems;
+        if (req > 0) {
+            snprintf(buf, sizeof buf, "%d/%d", gems_collected, req);
+            draw_text(24, 21, 1,
+                      gems_collected >= req ? 0xFF69B857 : 0xFF9BE3EA, buf);
+        } else {
+            snprintf(buf, sizeof buf, "%d/%d", gems_collected, total_gems);
+            draw_text(24, 21, 1, 0xFF9BE3EA, buf);
+        }
+    }
 
     /* isle + shards */
     snprintf(buf, sizeof buf, "ISLE %d/%d", cur_level + 1, NUM_LEVELS);
@@ -1969,8 +2000,9 @@ static void draw_hud(void) {
     /* score, right-aligned */
     snprintf(buf, sizeof buf, "SCORE %d", score);
     draw_text(LOGICAL_W - 6 - text_w(buf, 1), 6, 1, 0xFFF5F1E8, buf);
-    snprintf(buf, sizeof buf, "BEST %d", best_score);
-    draw_text(LOGICAL_W - 6 - text_w(buf, 1), 15, 1, 0xFF9BA0AB, buf);
+    snprintf(buf, sizeof buf, "BEST %d", shown_best);
+    draw_text(LOGICAL_W - 6 - text_w(buf, 1), 15, 1,
+              score > shown_best && shown_best > 0 ? 0xFFF2CE45 : 0xFF9BA0AB, buf);
     if (combo > 1 && combo_timer > 0) {
         snprintf(buf, sizeof buf, "COMBO X%d", combo);
         draw_text(LOGICAL_W - 6 - text_w(buf, 1), 26, 1, 0xFFE8853A, buf);
@@ -2027,7 +2059,9 @@ static void draw_hud(void) {
         Uint32 col = 0xFFF2CE45;
         if (banner_life < 30) col = (col & 0xFFFFFF) | 0x88000000;
         int bw = text_w(banner_txt, s);
-        int by = 60 + (banner_life > 130 ? (banner_life - 130) * 2 : 0);
+        /* drop below the isle intro card while it's on screen */
+        int by = (intro_life > 0 ? 145 : 60) +
+                 (banner_life > 130 ? (banner_life - 130) * 2 : 0);
         draw_text(LOGICAL_W / 2 - bw / 2, by, s, col, banner_txt);
     }
 }
@@ -2127,8 +2161,9 @@ static void draw_pause(void) {
         "SHOOT: X / SQUARE",
         "DASH: C / CIRCLE - KILLS RESET IT",
         "PAUSE: P / START",
+        "QUIT: ESC / SELECT WHILE PAUSED",
     };
-    for (int i = 0; i < 7; i++)
+    for (int i = 0; i < 8; i++)
         draw_text(LOGICAL_W / 2 - text_w(help[i], 1) / 2, 125 + i * 11, 1,
                   0xFF9BE3EA, help[i]);
 }
@@ -2300,8 +2335,11 @@ int main(int argc, char *argv[]) {
     if (getenv("SKYRIFT_TEST")) return run_tests();
     if (getenv("SKYRIFT_SHOT") && !getenv("SKYRIFT_TITLE"))
         game_state = ST_PLAY;   /* dev shots skip the title unless asked */
-    if (getenv("SKYRIFT_LEVEL"))
-        load_level(atoi(getenv("SKYRIFT_LEVEL")) % NUM_LEVELS);
+    if (getenv("SKYRIFT_LEVEL")) {
+        int lv = atoi(getenv("SKYRIFT_LEVEL")) % NUM_LEVELS;
+        if (lv < 0) lv += NUM_LEVELS;   /* C modulo keeps the sign */
+        load_level(lv);
+    }
 
     cam_x = player.x - LOGICAL_W / 2.0f;
     cam_y = player.y - LOGICAL_H / 2.0f;
@@ -2314,14 +2352,22 @@ int main(int argc, char *argv[]) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_QUIT) running = 0;
-            if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE) running = 0;
+            /* quit needs two steps mid-run: first ESC/SELECT pauses,
+               a second one quits - no more losing a run to a stray press */
+            if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE) {
+                if (game_state == ST_PLAY) game_state = ST_PAUSE;
+                else running = 0;
+            }
             int pausable = game_state == ST_PLAY || game_state == ST_PAUSE;
             if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_p && pausable)
                 game_state = (game_state == ST_PAUSE) ? ST_PLAY : ST_PAUSE;
             if (ev.type == SDL_JOYBUTTONDOWN) {
                 if (ev.jbutton.button == VITA_BTN_START && pausable)
                     game_state = (game_state == ST_PAUSE) ? ST_PLAY : ST_PAUSE;
-                if (ev.jbutton.button == VITA_BTN_SELECT) running = 0;
+                if (ev.jbutton.button == VITA_BTN_SELECT) {
+                    if (game_state == ST_PLAY) game_state = ST_PAUSE;
+                    else running = 0;
+                }
             }
         }
 
@@ -2359,6 +2405,10 @@ int main(int argc, char *argv[]) {
                         if (advancing) {
                             advancing = 0;
                             if (shards < 9) shards++;   /* nine shards, ten doors */
+                            /* persist the record each isle: a Vita closed from
+                               the LiveArea never reaches the exit-time save */
+                            if (score > best_score) best_score = score;
+                            save_best();
                             if (cur_level + 1 >= NUM_LEVELS) {
                                 victory = 1;
                                 if (score > best_score) best_score = score;
