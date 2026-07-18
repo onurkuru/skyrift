@@ -2,8 +2,6 @@
 
 An original sky-gliding pixel-art adventure for PS Vita homebrew and desktop.
 
-*Türkçe: [README.tr.md](README.tr.md)*
-
 - **Code**: original, single-file C99 + SDL2 ([src/main.c](src/main.c))
 - **Art**: ["Sunny Land"](https://opengameart.org/content/sunny-land-2d-pixel-art-pack) by Ansimuz, **CC0** (`assets/`)
 - **Audio**: no sound files — soft chiptune SFX and an ambient music loop are synthesized at boot
