@@ -1,6 +1,7 @@
 # Skyrift
 
-An original sky-gliding pixel-art adventure for PS Vita homebrew and desktop.
+An original sky-gliding pixel-art adventure for PS Vita homebrew and desktop,
+**by Onur Kuru**.
 
 - **Code**: original, single-file C99 + SDL2 ([src/main.c](src/main.c))
 - **Art**: ["Sunny Land"](https://opengameart.org/content/sunny-land-2d-pixel-art-pack) by Ansimuz, **CC0** (`assets/`)
@@ -136,7 +137,8 @@ VitaShell FTP, press X → Install, launch from LiveArea.
 - `SKYRIFT_LEVEL=n ./skyrift` — start on isle n (0-9)
 - `SKYRIFT_TITLE=1` — capture the title screen in shot mode
 
-## License
+## Credits & License
 
-Code is MIT. Art assets are from Ansimuz's CC0 "Sunny Land" packs.
-stb_image is public domain.
+- **Game design & code**: Onur Kuru — MIT License © 2026 Onur Kuru
+- **Art**: Ansimuz's CC0 "Sunny Land" packs
+- **PNG loader**: stb_image, public domain

@@ -2257,6 +2257,8 @@ static void draw_title(void) {
         snprintf(buf, sizeof buf, "BEST %d", best_score);
         draw_text(LOGICAL_W / 2 - text_w(buf, 1) / 2, 185, 1, 0xFF9BA0AB, buf);
     }
+    const char *by = "A GAME BY ONUR KURU";
+    draw_text(LOGICAL_W / 2 - text_w(by, 1) / 2, LOGICAL_H - 26, 1, 0xFFF2CE45, by);
     const char *cr = "ART: ANSIMUZ - SUNNY LAND CC0";
     draw_text(LOGICAL_W / 2 - text_w(cr, 1) / 2, LOGICAL_H - 14, 1, 0x889BA0AB, cr);
 }
@@ -2298,6 +2300,8 @@ static void draw_end(void) {
     draw_text(LOGICAL_W / 2 - text_w(buf, 1) / 2, 132, 1, 0xFF9BE3EA, buf);
     const char *y = "THANK YOU FOR FLYING, COURIER.";
     draw_text(LOGICAL_W / 2 - text_w(y, 1) / 2, 158, 1, 0xFF9BA0AB, y);
+    const char *by = "A GAME BY ONUR KURU";
+    draw_text(LOGICAL_W / 2 - text_w(by, 1) / 2, 172, 1, 0xFFF2CE45, by);
     if ((ticks / 30) % 2) {
         const char *pr = "PRESS Z / CROSS FOR TITLE";
         draw_text(LOGICAL_W / 2 - text_w(pr, 1) / 2, 195, 1, 0xFFF5F1E8, pr);
