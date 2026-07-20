@@ -2458,9 +2458,18 @@ int main(int argc, char *argv[]) {
 
         update_shake_offset();
         draw_backdrop();
-        draw_jungle(0.25f, 0.55f, 140, 80);
+        draw_jungle(0.25f, 0.55f, 96, 80);
         draw_haze();
-        draw_jungle(0.50f, 0.80f, 220, 40);
+        /* aerial perspective: the mid canopy used to sit at ~86% opacity, so
+           its leafy fringe read as pale shapes hovering right behind Kip.
+           Letting more sky through pushes it back into the distance. */
+        draw_jungle(0.50f, 0.80f, 158, 40);
+        /* depth scrim: sits between the parallax layers and the play plane so
+           background foliage never competes with Kip for attention */
+        SDL_SetRenderDrawBlendMode(g_ren, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(g_ren, 18, 34, 48, 46);
+        { SDL_Rect scrim = {0, 0, LOGICAL_W, LOGICAL_H};
+          SDL_RenderFillRect(g_ren, &scrim); }
         draw_decor();
         draw_map();
         draw_god_rays();
