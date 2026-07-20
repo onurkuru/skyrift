@@ -1875,16 +1875,9 @@ static void draw_entities(void) {
                       (int)(player.y - cam_y + sy) + PHIT_H - dh, dw, dh};
         SDL_RendererFlip flip_p =
             player.facing < 0 ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE;
-        /* 1px dark outline so Kip reads against busy foliage */
-        SDL_SetTextureColorMod(sheet, 20, 16, 30);
-        SDL_SetTextureAlphaMod(sheet, 180);
-        for (int o = 0; o < 4; o++) {
-            static const int ox[4] = {-1, 1, 0, 0}, oy[4] = {0, 0, -1, 1};
-            SDL_Rect od = {d.x + ox[o], d.y + oy[o], d.w, d.h};
-            SDL_RenderCopyEx(g_ren, sheet, &src_r, &od, angle, NULL, flip_p);
-        }
-        SDL_SetTextureColorMod(sheet, 255, 255, 255);
-        SDL_SetTextureAlphaMod(sheet, 255);
+        /* No synthetic outline here: the Sunny Land art already carries a
+           solid black key line, and stamping dark copies at +-1px on top of
+           it read as a second, shadowy fox standing behind the real one. */
         /* fox art faces right; mirror when heading left */
         SDL_RenderCopyEx(g_ren, sheet, &src_r, &d, angle, NULL, flip_p);
     }
