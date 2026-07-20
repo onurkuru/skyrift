@@ -824,6 +824,7 @@ static void respawn(void) {
     player.vx = player.vy = 0;
     player.hp = player.hp_max; player.inv = 90; player.gliding = 0;
     player.air_jumps = 1; player.spin_t = 0;
+    memset(ghosts, 0, sizeof ghosts);   /* don't strand them where you died */
     shake = 6;
 }
 
@@ -1027,8 +1028,9 @@ static void update_player(void) {
     if (banner_life > 0) banner_life--;
     if (muzzle_t > 0) muzzle_t--;
     if (gem_pop > 0) gem_pop--;
-    for (int i = 0; i < 6; i++)
-        if (ghosts[i].life > 0) ghosts[i].life--;
+    /* ghost decay deliberately lives in update_ghosts(), which the main loop
+       runs every tick - decaying it here would stall it during hit-stop and
+       death fades, stranding afterimages on screen */
 
     if (player.y > MAP_H * TILE + 60 && fade == 0) {
         spawn_particles(player.x, (float)(MAP_H * TILE), 0xFFC8384A, 12);
@@ -1038,6 +1040,15 @@ static void update_player(void) {
     jump_prev = in_jump;
     shoot_prev = in_shoot;
     dash_prev = in_dash;
+}
+
+/* Dash afterimages fade on their own clock. This must tick every frame, not
+   inside update_player(): hit-stop and the death fade skip update_player
+   entirely, which used to freeze ghosts on screen as a stationary double of
+   Kip that no longer followed him. */
+static void update_ghosts(void) {
+    for (int i = 0; i < 6; i++)
+        if (ghosts[i].life > 0) ghosts[i].life--;
 }
 
 static void hurt_player(void) {
@@ -2291,6 +2302,25 @@ static int run_tests(void) {
     }
     in_jump = 0; jump_prev = 0;
 
+    /* dash afterimages must fade even while the world is frozen. They used to
+       decay inside update_player(), which hit-stop and the death fade skip, so
+       a ghost could sit on screen as a motionless copy of Kip. */
+    memset(ghosts, 0, sizeof ghosts);
+    ghosts[0].life = 12; ghosts[0].x = player.x; ghosts[0].y = player.y;
+    freeze = 8;
+    for (int i = 0; i < 40; i++) update_ghosts();   /* main loop ticks regardless */
+    if (ghosts[0].life > 0) {
+        printf("FAIL ghost-decay: life=%d after 40 frozen frames\n", ghosts[0].life);
+        fail++;
+    } else printf("ok  ghost-decay (afterimage clears during hit-stop)\n");
+    freeze = 0;
+
+    /* and respawning must never leave one stranded where you died */
+    ghosts[0].life = 12;
+    respawn();
+    if (ghosts[0].life > 0) { printf("FAIL ghost-respawn: stale afterimage\n"); fail++; }
+    else printf("ok  ghost-respawn (afterimages cleared on death)\n");
+
     printf(fail ? "TESTS FAILED: %d\n" : "ALL TESTS PASSED\n", fail);
     return fail;
 }
@@ -2452,6 +2482,7 @@ int main(int argc, char *argv[]) {
                 update_camera();
                 play_ticks++;
             }
+            update_ghosts();   /* every tick, in every state - see the note above */
             ticks++;
             acc -= 1000.0f / 60.0f;
         }
