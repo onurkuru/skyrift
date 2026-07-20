@@ -190,6 +190,22 @@ static int kills;
 enum { ST_TITLE, ST_STORY, ST_PLAY, ST_PAUSE, ST_END };
 static int game_state = ST_TITLE;
 static int fade;                     /* death transition: 50..26 out, 25..0 in */
+static int void_fell;                /* fell off the map: respawn costs 1 HP */
+
+/* per-isle atmosphere: 0 none, 1 fireflies, 2 rain+lightning, 3 embers */
+#define N_WEATHER 70
+typedef struct { float x, y, vx, vy, phase; } WPart;
+static WPart wparts[N_WEATHER];
+static int lightning_t;              /* white flash decay */
+static unsigned long next_bolt;
+static int weather_mode(void) {
+    switch (cur_level) {
+        case 1: case 6: return 1;    /* Twilight Hollow, The Underroot */
+        case 8:         return 2;    /* Storm Ascent */
+        case 9:         return 3;    /* Tyrant's Throne */
+        default:        return 0;
+    }
+}
 static int freeze;                   /* hit-stop frames (render-only pause) */
 static int intro_life;               /* isle intro card timer */
 static int gem_pop;                  /* HUD gem icon bounce on pickup */
@@ -690,6 +706,15 @@ static void add_kill_score(int base, float x, float y) {
 }
 
 /* ---------- enemies ---------- */
+/* Enemy breeds: later isles field tougher strains of the same animal -
+   faster, meaner, +1 HP from isle 6 - so difficulty climbs with the story. */
+static int enemy_breed(void) {
+    if (cur_level <= 1) return 0;
+    if (cur_level <= 4) return 1;
+    if (cur_level <= 7) return 2;
+    return 3;
+}
+
 static void enemy_size(const Enemy *e, float *w, float *h) {
     switch (e->type) {
         case T_FROG:    *w = 20; *h = 20; break;
@@ -719,7 +744,8 @@ static Enemy *add_enemy(int type, float x, float y) {
     e->bob = (float)(rand() % 100);
     switch (type) {
         case T_FROG:    e->hp = 2; break;
-        case T_OPOSSUM: e->hp = 2; e->vx = 0.7f; break;
+        case T_OPOSSUM: e->hp = 2;
+                        e->vx = 0.7f + 0.15f * enemy_breed(); break;
         case T_BOSS:
             e->kind = LEVEL_CFG[cur_level].boss_kind;
             if (e->kind < 0) e->kind = 3;
@@ -727,6 +753,7 @@ static Enemy *add_enemy(int type, float x, float y) {
             break;
         default:        e->hp = 3; break;
     }
+    if (type != T_BOSS && enemy_breed() >= 2) e->hp++;   /* veteran strains */
     return e;
 }
 
@@ -799,7 +826,17 @@ place:
     player.vx = player.vy = 0; player.facing = 1; player.anim = 0;
     player.dash = player.dash_cd = 0;
     combo = 0; combo_timer = 0;
+    void_fell = 0;
     intro_life = 170;                  /* isle name card */
+    for (int i = 0; i < N_WEATHER; i++) {
+        wparts[i].x = (float)(rand() % (MAP_W * TILE));
+        wparts[i].y = (float)(rand() % (MAP_H * TILE));
+        wparts[i].vx = -1.2f - (float)(rand() % 10) / 8.0f;
+        wparts[i].vy = 6.0f + (float)(rand() % 30) / 10.0f;
+        wparts[i].phase = (float)(rand() % 628) / 100.0f;
+    }
+    lightning_t = 0;
+    next_bolt = play_ticks + 300;
     /* clear leftover projectiles/popups/fx from the previous isle */
     memset(bullets, 0, sizeof bullets);
     memset(popups, 0, sizeof popups);
@@ -821,6 +858,13 @@ static void respawn(void) {
     player.vx = player.vy = 0;
     player.hp = player.hp_max; player.inv = 90; player.gliding = 0;
     player.air_jumps = 1; player.spin_t = 0;
+    if (void_fell) {                 /* falling off the isles isn't free */
+        void_fell = 0;
+        if (player.hp > 1) {
+            player.hp--;
+            spawn_popup(player.x, player.y - 14, 0xFFC8384A, "-1 HP");
+        }
+    }
     shake = 6;
 }
 
@@ -1030,7 +1074,8 @@ static void update_player(void) {
 
     if (player.y > MAP_H * TILE + 60 && fade == 0) {
         spawn_particles(player.x, (float)(MAP_H * TILE), 0xFFC8384A, 12);
-        fade = 50;   /* fade to black, respawn at midpoint */
+        void_fell = 1;   /* the fall itself hurts */
+        fade = 50;       /* fade to black, respawn at midpoint */
     }
 
     jump_prev = in_jump;
@@ -1097,9 +1142,11 @@ static void update_enemies(void) {
                 e->vy += (e->homey - e->y) * 0.002f;
             }
             e->vx *= 0.96f; e->vy *= 0.96f;
-            {   /* cap chase speed so eagles stay dodgeable */
+            {   /* cap chase speed so eagles stay dodgeable; veteran breeds
+                   on later isles fly noticeably harder */
+                float cap = 1.7f + 0.15f * enemy_breed();
                 float sp = sqrtf(e->vx * e->vx + e->vy * e->vy);
-                if (sp > 1.7f) { e->vx *= 1.7f / sp; e->vy *= 1.7f / sp; }
+                if (sp > cap) { e->vx *= cap / sp; e->vy *= cap / sp; }
             }
             {
                 float ex = e->x + e->vx;
@@ -1122,15 +1169,16 @@ static void update_enemies(void) {
                     /* crouched: leap once the telegraph runs out */
                     if (e->timer == 0) {
                         e->vy = -4.4f;
-                        e->vx = (dx > 0 ? 1 : -1) * 1.4f;
-                        e->timer = 130;
+                        e->vx = (dx > 0 ? 1 : -1) * (1.4f + 0.15f * enemy_breed());
+                        e->timer = 130 - 10 * enemy_breed();
                         e->state = 1;
                     }
                 } else {
                     e->state = 0;
                     if (e->timer == 0 && dist < 120.0f) {
-                        e->state = 2;      /* crouch telegraph before the hop */
-                        e->timer = 26;
+                        /* crouch telegraph: veterans wind up quicker */
+                        e->state = 2;
+                        e->timer = 26 - 3 * enemy_breed();
                     }
                 }
                 if (e->vy > 0) e->vy = 0;
@@ -1207,7 +1255,7 @@ static void update_enemies(void) {
                     e->vx *= 0.95f; e->vy *= 0.95f;
                     if (e->timer == 0 && dist < 240.0f) {
                         e->state = 2;
-                        e->timer = 22;
+                        e->timer = 18;      /* tighter swoop telegraph */
                     }
                 } else if (e->state == 2) {
                     e->vx *= 0.85f; e->vy *= 0.85f;
@@ -1219,7 +1267,7 @@ static void update_enemies(void) {
                         shake = 2;
                     }
                 } else {
-                    if (e->timer == 0) { e->state = 0; e->timer = e->kind == 2 ? 100 : 130; }
+                    if (e->timer == 0) { e->state = 0; e->timer = e->kind == 2 ? 90 : 115; }
                 }
             }
 
@@ -1437,6 +1485,49 @@ static void update_particles(void) {
         if (!fxs[i].active) continue;
         if (ticks % 4 == 0 && ++fxs[i].frame >= 6) fxs[i].active = 0;
     }
+    /* isle atmosphere */
+    switch (weather_mode()) {
+    case 1:                          /* fireflies wander lazily */
+        for (int i = 0; i < N_WEATHER; i++) {
+            wparts[i].phase += 0.03f;
+            wparts[i].x += sinf(wparts[i].phase) * 0.35f;
+            wparts[i].y += cosf(wparts[i].phase * 0.7f) * 0.25f;
+            /* keep the swarm loosely around the camera so the screen
+               always carries a scatter of lights */
+            if (wparts[i].x < cam_x - 30) wparts[i].x += LOGICAL_W + 60;
+            if (wparts[i].x > cam_x + LOGICAL_W + 30) wparts[i].x -= LOGICAL_W + 60;
+            if (wparts[i].y < cam_y - 30) wparts[i].y += LOGICAL_H + 60;
+            if (wparts[i].y > cam_y + LOGICAL_H + 30) wparts[i].y -= LOGICAL_H + 60;
+        }
+        break;
+    case 2:                          /* driving rain + the odd bolt */
+        for (int i = 0; i < N_WEATHER; i++) {
+            wparts[i].x += wparts[i].vx;
+            wparts[i].y += wparts[i].vy;
+            if (wparts[i].y > cam_y + LOGICAL_H + 10) {
+                wparts[i].y = cam_y - 12;
+                wparts[i].x = cam_x + (float)(rand() % (LOGICAL_W + 80)) - 20;
+            }
+        }
+        if (play_ticks > next_bolt) {
+            lightning_t = 14;
+            next_bolt = play_ticks + 420 + (unsigned long)(rand() % 480);
+            shake = 2;
+        }
+        if (lightning_t > 0) lightning_t--;
+        break;
+    case 3:                          /* embers rise off the throne */
+        for (int i = 0; i < N_WEATHER; i++) {
+            wparts[i].phase += 0.04f;
+            wparts[i].x += sinf(wparts[i].phase) * 0.3f;
+            wparts[i].y -= 0.55f;
+            if (wparts[i].y < cam_y - 12) {
+                wparts[i].y = cam_y + LOGICAL_H + 10;
+                wparts[i].x = cam_x + (float)(rand() % LOGICAL_W);
+            }
+        }
+        break;
+    }
     for (int i = 0; i < MAX_POPUPS; i++) {
         if (popups[i].life <= 0) continue;
         popups[i].y -= 0.4f;
@@ -1567,13 +1658,6 @@ static const Uint8 BREED_TINT[4][3] = {
     {255, 185, 140},   /* isles 6-8: emberbacked   */
     {215, 160, 255},   /* isles 9-10: rift-touched */
 };
-static int enemy_breed(void) {
-    if (cur_level <= 1) return 0;
-    if (cur_level <= 4) return 1;
-    if (cur_level <= 7) return 2;
-    return 3;
-}
-
 /* soft blob under an entity, shrinking with height above the ground */
 static void draw_shadow(float cx, float feet_y, float wpx) {
     int tx = (int)(cx / TILE), ty = (int)(feet_y / TILE);
@@ -1823,7 +1907,45 @@ static void draw_entities(void) {
         SDL_RenderFillRect(g_ren, &d);
     }
 
-    /* (dash afterimages removed - see the note in update_player) */
+    /* isle atmosphere: fireflies / rain / rising embers */
+    switch (weather_mode()) {
+    case 1:
+        for (int i = 0; i < N_WEATHER; i += 2) {   /* fewer, precious lights */
+            int lx = (int)(wparts[i].x - cam_x), ly = (int)(wparts[i].y - cam_y);
+            if (lx < -8 || lx >= LOGICAL_W + 8 || ly < -8 || ly >= LOGICAL_H + 8) continue;
+            Uint8 a = (Uint8)(70 + 55 * sinf(wparts[i].phase * 1.7f));
+            SDL_SetTextureColorMod(tex_glow, 255, 226, 130);
+            SDL_SetTextureAlphaMod(tex_glow, a);
+            SDL_Rect g = {lx - 5, ly - 5, 10, 10};
+            SDL_RenderCopy(g_ren, tex_glow, NULL, &g);
+            set_color(0xFFFFF2C0);
+            SDL_Rect c = {lx, ly, 1, 1};
+            SDL_RenderFillRect(g_ren, &c);
+        }
+        break;
+    case 2:
+        SDL_SetRenderDrawBlendMode(g_ren, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(g_ren, 190, 215, 240, 110);
+        for (int i = 0; i < N_WEATHER; i++) {
+            int lx = (int)(wparts[i].x - cam_x), ly = (int)(wparts[i].y - cam_y);
+            if (lx < -8 || lx >= LOGICAL_W || ly < -8 || ly >= LOGICAL_H) continue;
+            SDL_RenderDrawLine(g_ren, lx, ly, lx - 2, ly + 7);
+        }
+        break;
+    case 3:
+        for (int i = 0; i < N_WEATHER; i += 2) {
+            int lx = (int)(wparts[i].x - cam_x), ly = (int)(wparts[i].y - cam_y);
+            if (lx < -8 || lx >= LOGICAL_W + 8 || ly < -8 || ly >= LOGICAL_H + 8) continue;
+            SDL_SetTextureColorMod(tex_glow, 255, 140, 60);
+            SDL_SetTextureAlphaMod(tex_glow, (Uint8)(60 + 40 * sinf(wparts[i].phase * 2.1f)));
+            SDL_Rect g = {lx - 4, ly - 4, 8, 8};
+            SDL_RenderCopy(g_ren, tex_glow, NULL, &g);
+            set_color(0xFFFFB050);
+            SDL_Rect c = {lx, ly, 1, 1};
+            SDL_RenderFillRect(g_ren, &c);
+        }
+        break;
+    }
 
     /* A1: no physics runs on the title/story screens, so Kip would hang
        frozen mid-air there - draw him only in actual play states */
@@ -2118,6 +2240,15 @@ static void draw_title(void) {
         draw_glyph(lx + (int)(p - logo) * 4 * s, 60, s, *p);
     const char *sub = "A SKY-GLIDING ADVENTURE";
     draw_text(LOGICAL_W / 2 - text_w(sub, 1) / 2, 100, 1, 0xFF9BE3EA, sub);
+    /* Kip greets you from the title screen */
+    SDL_SetTextureColorMod(tex_glow, 255, 230, 160);
+    SDL_SetTextureAlphaMod(tex_glow, 60);
+    SDL_Rect hg = {66, 112, 90, 90};
+    SDL_RenderCopy(g_ren, tex_glow, NULL, &hg);
+    SDL_Rect hsrc = {0, 0, 33, 32};
+    int hbob = (int)(sinf((float)ticks * 0.05f) * 3.0f);
+    SDL_Rect hd = {78, 122 + hbob, 66, 64};
+    SDL_RenderCopy(g_ren, tex_hero_idle, &hsrc, &hd);
     if ((ticks / 30) % 2) {
         const char *pr = "PRESS Z / CROSS TO START";
         draw_text(LOGICAL_W / 2 - text_w(pr, 2) / 2, 150, 2, 0xFFF5F1E8, pr);
@@ -2508,6 +2639,12 @@ int main(int argc, char *argv[]) {
         draw_entities();
         draw_glow_pass();
         draw_foreground();
+        if (lightning_t > 0 && game_state == ST_PLAY) {
+            SDL_SetRenderDrawBlendMode(g_ren, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(g_ren, 235, 240, 255, (Uint8)(lightning_t * 13));
+            SDL_Rect fl = {0, 0, LOGICAL_W, LOGICAL_H};
+            SDL_RenderFillRect(g_ren, &fl);
+        }
         SDL_RenderCopy(g_ren, tex_vignette, NULL, NULL);
         if (game_state == ST_TITLE) draw_title();
         else if (game_state == ST_STORY) draw_story();
