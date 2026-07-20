@@ -63,7 +63,7 @@ Tyrant on isle 10 and relight the Beacon.
 
 ## Mechanics
 
-- Press jump again in the air → **double jump** (tucks into a spinning ball);
+- Press jump again in the air → **double jump** (barrel roll);
   **hold jump in the air → tail glide** (slow fall, strong air control)
 - **Stomp**: land on a foe to squash it — hold jump for a high bounce, and
   the stomp refreshes your air jump for big chain routes
@@ -73,12 +73,17 @@ Tyrant on isle 10 and relight the Beacon.
 - **Skill levels**: LV2 dash · LV3 double shot · LV4 rapid fire · LV5 +1 max HP · LV6 triple shot
 - **Enemies**: eagle (chases, speed-capped), frog (crouch-telegraphs its hop),
   opossum (patrols) + 4 bosses with minion waves and telegraphed attacks
-- Cherries heal; checkpoint signs move your respawn point **and heal you full**
+- **Enemy breeds**: later isles field tougher strains — frostbitten,
+  emberbacked, then rift-touched — faster, meaner, +1 HP from isle 6
+- **Isle atmospheres**: fireflies in the hollows, driving rain and lightning
+  over Storm Ascent, embers rising through the Tyrant's arena
+- Cherries heal; checkpoint signs move your respawn point **and heal you full**;
+  falling off an isle costs 1 HP (never lethal)
 - Best score persists on device; completion time shown at the end
 - Coyote time, variable jump height, squash & stretch, gem magnet, hit-stop,
-  ground shadows, dash afterimages, isle intro cards
-- Every isle is machine-validated: each gem and door is reachable from both
-  the spawn and the door — no dead ends, no soft-locks
+  ground shadows, isle intro cards
+- Every isle is **physics-verified**: a validator replays the real jump arcs
+  and proves every gem and door reachable — no dead ends, no soft-locks
 
 ## Desktop build
 
