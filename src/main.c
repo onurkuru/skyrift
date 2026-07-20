@@ -153,7 +153,7 @@ typedef struct { int x, y, active; } Checkpoint;
 /* ---------- globals ---------- */
 static SDL_Renderer *g_ren;
 static SDL_Texture *tex_eagle, *tex_frog_idle, *tex_frog_jump, *tex_opossum;
-static SDL_Texture *tex_sq_idle, *tex_sq_run, *tex_sq_jump;
+static SDL_Texture *tex_hero_idle, *tex_hero_run, *tex_hero_jump;
 static SDL_Texture *tex_death, *tex_gem, *tex_cherry;
 static SDL_Texture *tex_tileset, *tex_back, *tex_middle;
 static SDL_Texture *tex_tree, *tex_bush, *tex_shroom, *tex_platform;
@@ -986,7 +986,7 @@ static void update_player(void) {
         float old_feet = player.y + PHIT_H - 1;
         float ny = player.y + player.vy;
         if (landing_box(player.x, ny, PHIT_W, PHIT_H, old_feet, player.drop == 0)) {
-            /* snap feet onto the tile top so the squirrel never hovers */
+            /* snap feet onto the tile top so the hero never hovers */
             int fty = (int)((ny + PHIT_H - 1) / TILE);
             player.y = (float)(fty * TILE - PHIT_H);
             player.on_ground = 1;
@@ -1561,6 +1561,21 @@ static void draw_map(void) {
     }
 }
 
+/* Enemy breeds: later isles field tougher-looking strains of the same
+   animal, so the cast reads as escalating instead of repeating. */
+static const Uint8 BREED_TINT[4][3] = {
+    {255, 255, 255},   /* isles 1-2: common stock  */
+    {170, 215, 255},   /* isles 3-5: frostbitten   */
+    {255, 185, 140},   /* isles 6-8: emberbacked   */
+    {215, 160, 255},   /* isles 9-10: rift-touched */
+};
+static int enemy_breed(void) {
+    if (cur_level <= 1) return 0;
+    if (cur_level <= 4) return 1;
+    if (cur_level <= 7) return 2;
+    return 3;
+}
+
 /* soft blob under an entity, shrinking with height above the ground */
 static void draw_shadow(float cx, float feet_y, float wpx) {
     int tx = (int)(cx / TILE), ty = (int)(feet_y / TILE);
@@ -1583,11 +1598,20 @@ static void draw_shadow(float cx, float feet_y, float wpx) {
 static void draw_enemy(Enemy *e) {
     float w, h; enemy_size(e, &w, &h);
     int flip = (player.x + 6 > e->x + w / 2);
+    const Uint8 *bt_c = BREED_TINT[enemy_breed()];
+    /* elite breeds carry a faint aura so they pop against the foliage */
+    if (e->type != T_BOSS && enemy_breed() > 0) {
+        SDL_SetTextureColorMod(tex_glow, bt_c[0], bt_c[1], bt_c[2]);
+        SDL_SetTextureAlphaMod(tex_glow, 45);
+        SDL_Rect au = {(int)(e->x - cam_x + g_shx) + (int)w / 2 - 22,
+                       (int)(e->y - cam_y + g_shy) + (int)h / 2 - 22, 44, 44};
+        SDL_RenderCopy(g_ren, tex_glow, NULL, &au);
+    }
     switch (e->type) {
     case T_EAGLE: {
         SDL_Rect src = {(int)((ticks / 6 + (long)(e - enemies)) % 4) * 40, 0, 40, 41};
         if (e->flash > 0) SDL_SetTextureColorMod(tex_eagle, 255, 80, 80);
-        else SDL_SetTextureColorMod(tex_eagle, 255, 255, 255);
+        else SDL_SetTextureColorMod(tex_eagle, bt_c[0], bt_c[1], bt_c[2]);
         SDL_Rect d = {(int)(e->x - cam_x + g_shx) - 12,
                       (int)(e->y - cam_y + g_shy) - 12, 40, 41};
         /* face flight direction while moving; face the player when hovering */
@@ -1614,7 +1638,7 @@ static void draw_enemy(Enemy *e) {
             src = (SDL_Rect){fi * 35, 0, 35, 32};
         }
         if (e->flash > 0) SDL_SetTextureColorMod(t, 255, 80, 80);
-        else SDL_SetTextureColorMod(t, 255, 255, 255);
+        else SDL_SetTextureColorMod(t, bt_c[0], bt_c[1], bt_c[2]);
         SDL_Rect d = {(int)(e->x - cam_x + g_shx) - 8,
                       (int)(e->y - cam_y + g_shy) - 12, 35, 32};
         /* frog art faces left */
@@ -1625,7 +1649,7 @@ static void draw_enemy(Enemy *e) {
     case T_OPOSSUM: {
         SDL_Rect src = {(int)(ticks / 6 % 6) * 36, 0, 36, 28};
         if (e->flash > 0) SDL_SetTextureColorMod(tex_opossum, 255, 80, 80);
-        else SDL_SetTextureColorMod(tex_opossum, 255, 255, 255);
+        else SDL_SetTextureColorMod(tex_opossum, bt_c[0], bt_c[1], bt_c[2]);
         SDL_Rect d = {(int)(e->x - cam_x + g_shx) - 6,
                       (int)(e->y - cam_y + g_shy) - 14, 36, 28};
         /* opossum art walks left; flip when moving right */
@@ -1801,50 +1825,48 @@ static void draw_entities(void) {
         SDL_RenderFillRect(g_ren, &d);
     }
 
-    /* dash afterimages: fading tucked-ball ghosts along the dash path */
+    /* dash afterimages: fading copies of the dash pose along the path */
     for (int i = 0; i < 6; i++) {
         if (ghosts[i].life <= 0) continue;
-        SDL_SetTextureAlphaMod(tex_sq_jump, (Uint8)(ghosts[i].life * 14));
-        SDL_SetTextureColorMod(tex_sq_jump, 180, 220, 255);
-        SDL_Rect gsrc = {46, 0, 46, 43};
-        SDL_Rect gd = {(int)(ghosts[i].x - cam_x + sx) + PHIT_W / 2 - 23,
-                       (int)(ghosts[i].y - cam_y + sy) + PHIT_H - 43, 46, 43};
-        SDL_RenderCopyEx(g_ren, tex_sq_jump, &gsrc, &gd, 0, NULL,
+        SDL_SetTextureAlphaMod(tex_hero_jump, (Uint8)(ghosts[i].life * 14));
+        SDL_SetTextureColorMod(tex_hero_jump, 180, 220, 255);
+        SDL_Rect gsrc = {0, 0, 33, 32};
+        SDL_Rect gd = {(int)(ghosts[i].x - cam_x + sx) + PHIT_W / 2 - 16,
+                       (int)(ghosts[i].y - cam_y + sy) + PHIT_H - 32, 33, 32};
+        SDL_RenderCopyEx(g_ren, tex_hero_jump, &gsrc, &gd, 0, NULL,
             ghosts[i].facing < 0 ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
     }
-    SDL_SetTextureAlphaMod(tex_sq_jump, 255);
-    SDL_SetTextureColorMod(tex_sq_jump, 255, 255, 255);
+    SDL_SetTextureAlphaMod(tex_hero_jump, 255);
+    SDL_SetTextureColorMod(tex_hero_jump, 255, 255, 255);
 
     /* A1: no physics runs on the title/story screens, so Kip would hang
        frozen mid-air there - draw him only in actual play states */
     if (game_state != ST_TITLE && game_state != ST_STORY &&
         player.inv % 8 < 5) {
-        /* Kip the glider squirrel (Sunny Land Woods player, CC0) */
+        /* Kip the Glider Courier (Sunny Land fox, CC0). This sheet has real
+           rise/fall poses - the old squirrel jump sheet was a 4-frame spin
+           loop, so every airborne frame drew an unreadable orange ball. */
         SDL_Texture *sheet;
         SDL_Rect src_r;
-        int fw, fh;
+        int fw = 33, fh = 32;
         double angle = 0;
         if (!player.on_ground) {
-            sheet = tex_sq_jump; fw = 46; fh = 43;
-            int fi;
+            sheet = tex_hero_jump;
+            int fi = player.vy < 0 ? 0 : 1;          /* rising / falling */
             if (player.spin_t > 0) {
-                fi = 1;                                  /* tucked ball */
+                fi = 0;                              /* air-jump barrel roll */
                 angle = (22 - player.spin_t) * 32.0 * player.facing;
             } else if (player.gliding) {
-                fi = 3;                                  /* spread, tail out */
-                angle = 8.0 * player.facing;
-            } else if (player.vy < 0) fi = 2;
-            else fi = 3;
+                fi = 1;                              /* tail out, wind-caught */
+                angle = 10.0 * player.facing;
+            }
             src_r = (SDL_Rect){fi * fw, 0, fw, fh};
         } else if (fabsf(player.vx) > 0.3f) {
-            sheet = tex_sq_run; fw = 54; fh = 27;
+            sheet = tex_hero_run;
             src_r = (SDL_Rect){(int)player.anim % 6 * fw, 0, fw, fh};
         } else {
-            sheet = tex_sq_idle; fw = 33; fh = 25;
-            /* tail swish plays once, then Kip rests - the constant loop
-               made the curled-tail frames read as a ball behind him */
-            int ti = (int)((float)ticks * 0.1f) % 26;
-            src_r = (SDL_Rect){(ti < 8 ? ti : 0) * fw, 0, fw, fh};
+            sheet = tex_hero_idle;
+            src_r = (SDL_Rect){(int)((float)ticks * 0.12f) % 4 * fw, 0, fw, fh};
         }
         int dw = fw, dh = fh;
         if (player.land_t > 0)      { dw = fw + player.land_t; dh = fh - player.land_t / 2; }
@@ -1863,7 +1885,7 @@ static void draw_entities(void) {
         }
         SDL_SetTextureColorMod(sheet, 255, 255, 255);
         SDL_SetTextureAlphaMod(sheet, 255);
-        /* woods squirrel art faces right; mirror when heading left */
+        /* fox art faces right; mirror when heading left */
         SDL_RenderCopyEx(g_ren, sheet, &src_r, &d, angle, NULL, flip_p);
     }
 
@@ -2304,9 +2326,9 @@ int main(int argc, char *argv[]) {
 #endif
 
     tex_eagle       = load_png("eagle.png", NULL, NULL);
-    tex_sq_idle     = load_png("squirrel-idle.png", NULL, NULL);
-    tex_sq_run      = load_png("squirrel-run.png", NULL, NULL);
-    tex_sq_jump     = load_png("squirrel-jump.png", NULL, NULL);
+    tex_hero_idle   = load_png("player-idle.png", NULL, NULL);
+    tex_hero_run    = load_png("player-run.png", NULL, NULL);
+    tex_hero_jump   = load_png("player-jump.png", NULL, NULL);
     tex_frog_idle   = load_png("frog-idle.png", NULL, NULL);
     tex_frog_jump   = load_png("frog-jump.png", NULL, NULL);
     tex_opossum     = load_png("opossum.png", NULL, NULL);

@@ -26,9 +26,9 @@ An original sky-gliding pixel-art adventure for PS Vita homebrew and desktop.
 
 The Sunreef Isles float on the Old Wind. The Sky Tyrant shattered the Great
 Beacon, and its nine shards fell across the isles. The wind is dying; the
-isles are sinking. You are **Kip** — the last Glider Courier, a flying
-squirrel who catches the wind with his tail. Cross the ten isles, free every
-shard, relight the Beacon.
+isles are sinking. You are **Kip** — the last Glider Courier, a fox who
+catches the wind with his tail. Cross the ten isles, free every shard,
+relight the Beacon.
 
 ## The Ten Isles
 

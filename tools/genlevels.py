@@ -2,6 +2,8 @@
 """Generate src/levels.h: 10 maps, per-level config, boss table.
 Chars: '#' solid  '=' one-way  '*' gem  'H' cherry  'E' eagle  'F' frog
 'O' opossum  'B' boss  'P' spawn  'C' checkpoint  'D' door"""
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 W, H = 90, 30
 
 def new(): return [[' ']*W for _ in range(H)]
@@ -94,8 +96,14 @@ def add(g,name,req,boss,back,jungle):
     ng=sum(r.count('*') for r in s)
     assert ng>=req+3, f"{name} gems {ng} req {req}"
     validate(s,name)
+    # authoritative check: replay the real jump physics (tools/reach.py).
+    # The cheap model above has no idea what sits *between* two platforms;
+    # it once passed an isle 3 whose climb was sealed by a 17-tile trunk.
+    import reach
+    probs=reach.audit(s,name,req)
+    assert not probs, name+" UNPLAYABLE:\n  "+"\n  ".join(probs)
     levels.append(s); cfgs.append((name,req,boss,back,jungle))
-    print(f"{name}: gems={ng} req={req} boss={boss}")
+    print(f"{name}: gems={ng} req={req} boss={boss}  [physics-verified]")
 
 # ---------- L1 VERDANT WOODS (forest intro, door) ----------
 L1=[
@@ -161,9 +169,14 @@ add(g,"TWILIGHT HOLLOW",12,-1,(140,150,210),(120,120,180))
 g=new()
 fill(g,25,29,0,89)               # forest floor
 for c0 in (12,30,48):            # tree trunks with branch platforms
+    # branches on BOTH sides every 4 rows: the trunk is solid from row 8 to
+    # the floor, so alternating sides would strand the climb (an earlier
+    # build shipped isle 3 impassable exactly this way). Topping out at
+    # row 8 puts you level with the trunk crown, so you can cross over.
     vseg(g,c0,8,24); vseg(g,c0+1,8,24)
-    hseg(g,20,c0-5,c0-2,'='); hseg(g,16,c0+3,c0+6,'=')
-    hseg(g,12,c0-5,c0-2,'='); hseg(g,8,c0+3,c0+6,'=')
+    for r in (20,16,12,8):
+        hseg(g,r,c0-5,c0-2,'=')
+        hseg(g,r,c0+3,c0+6,'=')
 hseg(g,5,20,40,'=')              # canopy walkway
 hseg(g,5,48,60,'=')
 fill(g,22,24,66,87)              # boss arena plateau
@@ -187,9 +200,12 @@ fill(g,6,7,2,70)                 # top shelf, gap right
 fill(g,12,13,20,87)              # second shelf, gap left
 fill(g,19,20,2,66)               # third shelf, gap right
 hseg(g,26,2,87); hseg(g,27,2,87) # bottom floor
-vseg(g,40,8,11); vseg(g,41,8,11)         # dividers
-vseg(g,56,14,18); vseg(g,57,14,18)
-vseg(g,28,21,25); vseg(g,29,21,25)
+# stalactites hanging from the shelf above - they read as cave dividers but
+# leave the walkway clear. Floor-to-ceiling columns here sealed each corridor
+# outright and made the whole isle unfinishable.
+vseg(g,40,8,9);  vseg(g,41,8,9)
+vseg(g,56,14,16); vseg(g,57,14,16)
+vseg(g,28,21,23); vseg(g,29,21,23)
 hseg(g,9,76,79,'='); hseg(g,16,8,11,'='); hseg(g,23,74,77,'=')
 hseg(g,19,70,73,'='); hseg(g,12,14,17,'=')   # climb-back ladders (no one-way trips)
 put(g,4,4,'P'); grounded(g,25,84,'D')
@@ -305,7 +321,7 @@ put(g,25,5,'P')
 grounded(g,5,82,'D')
 put(g,3,76,'B')
 for r,c in [(22,21),(19,31),(22,41),(16,46),(13,37),(10,27),(7,37),(10,53),
-            (7,64),(13,60),(16,71),(10,79),(20,13),(11,43),(5,55),(25,10),(17,21),(20,86)]: put(g,r,c,'*')
+            (7,64),(13,60),(16,71),(10,79),(20,13),(11,43),(5,55),(25,10),(17,21),(16,74)]: put(g,r,c,'*')
 for r,c in [(22,26),(17,40),(11,32),(10,58),(14,70),(4,50)]: put(g,r,c,'E')
 grounded(g,5,74,'F'); grounded(g,20,32,'O')
 grounded(g,9,47,'H'); grounded(g,3,65,'H')
