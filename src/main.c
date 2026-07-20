@@ -978,9 +978,17 @@ static void update_player(void) {
         float old_feet = player.y + PHIT_H - 1;
         float ny = player.y + player.vy;
         if (landing_box(player.x, ny, PHIT_W, PHIT_H, old_feet, player.drop == 0)) {
-            /* snap feet onto the tile top so the hero never hovers */
+            /* Snap feet onto the tile top so the hero never hovers - but
+               leave a 0.8px inset. A flush snap put the feet exactly one
+               pixel above the ground row, so next frame's 0.35px gravity
+               step still probed the AIR row: the game flip-flopped between
+               grounded and falling every other frame, and the idle pose
+               strobing against the fall pose at 30Hz read as a ghost twin
+               (video-verified). With the inset, feet + gravity land inside
+               the ground row every frame while staying clear of it for the
+               horizontal collision probes. */
             int fty = (int)((ny + PHIT_H - 1) / TILE);
-            player.y = (float)(fty * TILE - PHIT_H);
+            player.y = (float)(fty * TILE - PHIT_H) + 0.8f;
             player.on_ground = 1;
             player.gliding = 0;
             player.air_jumps = 1;
@@ -1824,9 +1832,17 @@ static void draw_entities(void) {
         /* Kip the Glider Courier (Sunny Land fox, CC0). This sheet has real
            rise/fall poses - the old squirrel jump sheet was a 4-frame spin
            loop, so every airborne frame drew an unreadable orange ball. */
+        /* Animation rule learned the hard way: every visible pixel must move
+           TOGETHER. The old idle cycled sheet frames where the body stayed
+           put while a paw flicked in and out - on screen those stray pixels
+           blended into a faint second fox behind Kip (enemies never ghosted
+           because their frames move the whole body). So idle life comes from
+           whole-sprite squash breathing + a rare one-shot fidget, and the
+           air/run poses get whole-sprite tilt instead of extra frames. */
         SDL_Texture *sheet;
         SDL_Rect src_r;
         int fw = 33, fh = 32;
+        int idle_squash = 0;
         double angle = 0;
         if (!player.on_ground) {
             sheet = tex_hero_jump;
@@ -1835,20 +1851,39 @@ static void draw_entities(void) {
                 fi = 0;                              /* air-jump barrel roll */
                 angle = (22 - player.spin_t) * 32.0 * player.facing;
             } else if (player.gliding) {
-                fi = 1;                              /* tail out, wind-caught */
-                angle = 10.0 * player.facing;
+                /* wind-caught, rocking gently on the current */
+                fi = 1;
+                angle = (10.0 + sinf((float)ticks * 0.12f) * 3.0) * player.facing;
+            } else {
+                /* lean into the arc: nose up on the rise, dip on the fall */
+                double tilt = player.vy * 2.4;
+                if (tilt < -12) tilt = -12;
+                if (tilt > 16) tilt = 16;
+                angle = tilt * player.facing;
             }
             src_r = (SDL_Rect){fi * fw, 0, fw, fh};
         } else if (fabsf(player.vx) > 0.3f) {
             sheet = tex_hero_run;
             src_r = (SDL_Rect){(int)player.anim % 6 * fw, 0, fw, fh};
+            angle = 3.0 * player.facing;             /* sprint lean */
         } else {
             sheet = tex_hero_idle;
-            src_r = (SDL_Rect){(int)((float)ticks * 0.12f) % 4 * fw, 0, fw, fh};
+            int fi = 0;
+            int cyc = (int)(ticks % 360);
+            if (cyc < 24) {
+                /* one-shot fidget every ~6s: quick full look-around */
+                static const int fidget[4] = {1, 2, 3, 1};
+                fi = fidget[cyc / 6];
+            } else {
+                /* whole-body squash breathing, ~1.5s cycle */
+                idle_squash = (sinf((float)ticks * 0.07f) > 0.0f) ? 1 : 0;
+            }
+            src_r = (SDL_Rect){fi * fw, 0, fw, fh};
         }
         int dw = fw, dh = fh;
         if (player.land_t > 0)      { dw = fw + player.land_t; dh = fh - player.land_t / 2; }
         else if (player.jump_t > 0) { dw = fw - player.jump_t / 2; dh = fh + player.jump_t / 2; }
+        else if (idle_squash)       { dw = fw + 1; dh = fh - 1; }
         SDL_Rect d = {(int)(player.x - cam_x + sx) + PHIT_W / 2 - dw / 2,
                       (int)(player.y - cam_y + sy) + PHIT_H - dh, dw, dh};
         SDL_RendererFlip flip_p =
@@ -2268,6 +2303,25 @@ static int run_tests(void) {
         else printf("ok  double-jump height (%.1fpx >= 80px)\n", 300 - top);
     }
     in_jump = 0; jump_prev = 0;
+
+    /* standing must be STABLE: the flush landing snap used to leave the feet
+       a hair above the ground row, so gravity re-aired the player every other
+       frame and the idle/fall poses strobed into a ghost twin (video-verified).
+       After landing, on_ground must hold through a long idle. */
+    player.x = 150; player.y = 300; player.vy = 4; player.on_ground = 0;
+    player.drop = 0; player.dash = 0; player.gliding = 0;
+    in_jump = 0; jump_prev = 0;
+    for (int i = 0; i < 30 && !player.on_ground; i++) update_player();
+    {
+        int air_frames = 0;
+        for (int i = 0; i < 60; i++) {
+            update_player();
+            if (!player.on_ground) air_frames++;
+        }
+        if (air_frames > 0)
+            { printf("FAIL ground-stability: airborne %d/60 idle frames\n", air_frames); fail++; }
+        else printf("ok  ground-stability (on_ground held for 60 idle frames)\n");
+    }
 
     printf(fail ? "TESTS FAILED: %d\n" : "ALL TESTS PASSED\n", fail);
     return fail;
