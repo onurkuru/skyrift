@@ -198,14 +198,10 @@ typedef struct { float x, y, vx, vy, phase; } WPart;
 static WPart wparts[N_WEATHER];
 static int lightning_t;              /* white flash decay */
 static unsigned long next_bolt;
-static int weather_mode(void) {
-    switch (cur_level) {
-        case 1: case 6: return 1;    /* Twilight Hollow, The Underroot */
-        case 8:         return 2;    /* Storm Ascent */
-        case 9:         return 3;    /* Tyrant's Throne */
-        default:        return 0;
-    }
-}
+/* per-isle atmosphere lives in the generated LEVEL_CFG table (genlevels.py),
+   like every other per-level property - hard-coded indices here silently
+   pointed at the wrong isles the moment the level list was reordered */
+static int weather_mode(void) { return LEVEL_CFG[cur_level].weather; }
 static int freeze;                   /* hit-stop frames (render-only pause) */
 static int intro_life;               /* isle intro card timer */
 static int gem_pop;                  /* HUD gem icon bounce on pickup */
@@ -706,14 +702,23 @@ static void add_kill_score(int base, float x, float y) {
 }
 
 /* ---------- enemies ---------- */
-/* Enemy breeds: later isles field tougher strains of the same animal -
-   faster, meaner, +1 HP from isle 6 - so difficulty climbs with the story. */
-static int enemy_breed(void) {
-    if (cur_level <= 1) return 0;
-    if (cur_level <= 4) return 1;
-    if (cur_level <= 7) return 2;
-    return 3;
-}
+/* Enemy breeds: later isles field tougher strains of the same animal, so
+   difficulty climbs with the story. The tier comes from LEVEL_CFG (data
+   lives with the level definitions); the per-tier tuning sits in one table
+   here instead of magic literals scattered across the enemy branches. */
+static int enemy_breed(void) { return LEVEL_CFG[cur_level].breed; }
+
+static const struct {
+    float spd_add;      /* added to opossum walk, eagle cap, frog hop  */
+    int hp_add;         /* extra HP for non-boss enemies               */
+    int tele_sub;       /* frames shaved off the frog crouch telegraph */
+    int cool_sub;       /* frames shaved off the frog hop cooldown     */
+} BREED_CFG[4] = {
+    {0.00f, 0, 0, 0},
+    {0.15f, 0, 3, 10},
+    {0.30f, 1, 6, 20},
+    {0.45f, 1, 9, 30},
+};
 
 static void enemy_size(const Enemy *e, float *w, float *h) {
     switch (e->type) {
@@ -745,7 +750,7 @@ static Enemy *add_enemy(int type, float x, float y) {
     switch (type) {
         case T_FROG:    e->hp = 2; break;
         case T_OPOSSUM: e->hp = 2;
-                        e->vx = 0.7f + 0.15f * enemy_breed(); break;
+                        e->vx = 0.7f + BREED_CFG[enemy_breed()].spd_add; break;
         case T_BOSS:
             e->kind = LEVEL_CFG[cur_level].boss_kind;
             if (e->kind < 0) e->kind = 3;
@@ -753,7 +758,10 @@ static Enemy *add_enemy(int type, float x, float y) {
             break;
         default:        e->hp = 3; break;
     }
-    if (type != T_BOSS && enemy_breed() >= 2) e->hp++;   /* veteran strains */
+    /* veteran strains carry extra HP, but never past what one stomp still
+       one-shots (see update_enemies) - the bonus is felt in longer bullet
+       fights, not a broken stomp contract */
+    if (type != T_BOSS) e->hp += BREED_CFG[enemy_breed()].hp_add;
     return e;
 }
 
@@ -828,9 +836,15 @@ place:
     combo = 0; combo_timer = 0;
     void_fell = 0;
     intro_life = 170;                  /* isle name card */
+    /* Seed weather around the SPAWN camera, not the whole map: the camera
+       starts centred on the player and recycling is camera-relative, so a
+       map-wide scatter left most particles off-screen at isle start - rain
+       visibly thickened over ~1.3s and embers (no horizontal wrap, 0.55
+       px/frame rise) took 5-10s to reach full density. A screen-sized band
+       around spawn means the isle is atmospheric from frame one. */
     for (int i = 0; i < N_WEATHER; i++) {
-        wparts[i].x = (float)(rand() % (MAP_W * TILE));
-        wparts[i].y = (float)(rand() % (MAP_H * TILE));
+        wparts[i].x = player.spawnx + (float)(rand() % (LOGICAL_W + 80)) - 40;
+        wparts[i].y = player.spawny + (float)(rand() % (LOGICAL_H + 80)) - 40;
         wparts[i].vx = -1.2f - (float)(rand() % 10) / 8.0f;
         wparts[i].vy = 6.0f + (float)(rand() % 30) / 10.0f;
         wparts[i].phase = (float)(rand() % 628) / 100.0f;
@@ -854,16 +868,29 @@ static void game_reset(void) {
 }
 
 static void respawn(void) {
+    /* Every respawn (checkpoint death or void fall alike) heals to full -
+       that's the base mechanic, not something to undo here. A void fall
+       must never do BETTER than that baseline, so the penalty is capped at
+       the HP the player actually fell with: min(pre-fall hp, hp_max - 1).
+       Subtracting 1 from the post-heal value unconditionally (the old code)
+       produced hp_max - 1 regardless of how low the player was pre-fall -
+       e.g. diving at 1 HP still landed on hp_max - 1, a net heal. Capping
+       by the pre-fall HP closes that: falling at 1 HP respawns at 1 HP, no
+       heal. Floor of 1 keeps the fall non-lethal either way. */
+    int pre_fall_hp = player.hp;
+    int fell_penalty = void_fell;
+    void_fell = 0;
+
     player.x = player.spawnx; player.y = player.spawny;
     player.vx = player.vy = 0;
     player.hp = player.hp_max; player.inv = 90; player.gliding = 0;
     player.air_jumps = 1; player.spin_t = 0;
-    if (void_fell) {                 /* falling off the isles isn't free */
-        void_fell = 0;
-        if (player.hp > 1) {
-            player.hp--;
-            spawn_popup(player.x, player.y - 14, 0xFFC8384A, "-1 HP");
-        }
+    if (fell_penalty) {               /* falling off the isles isn't free */
+        int capped = player.hp_max - 1;
+        if (pre_fall_hp < capped) capped = pre_fall_hp;
+        if (capped < 1) capped = 1;
+        player.hp = capped;
+        spawn_popup(player.x, player.y - 14, 0xFFC8384A, "-1 HP");
     }
     shake = 6;
 }
@@ -1143,8 +1170,12 @@ static void update_enemies(void) {
             }
             e->vx *= 0.96f; e->vy *= 0.96f;
             {   /* cap chase speed so eagles stay dodgeable; veteran breeds
-                   on later isles fly noticeably harder */
-                float cap = 1.7f + 0.15f * enemy_breed();
+                   on later isles fly noticeably harder. (Accel 0.05/frame
+                   with 0.96 damping settles the chase at ~1.2px/frame in
+                   practice, well under any of these caps - this bounds
+                   transient bursts, e.g. off the home-spring branch, not
+                   steady pursuit; the player can always outrun a chase.) */
+                float cap = 1.7f + BREED_CFG[enemy_breed()].spd_add;
                 float sp = sqrtf(e->vx * e->vx + e->vy * e->vy);
                 if (sp > cap) { e->vx *= cap / sp; e->vy *= cap / sp; }
             }
@@ -1168,17 +1199,23 @@ static void update_enemies(void) {
                 if (e->state == 2) {
                     /* crouched: leap once the telegraph runs out */
                     if (e->timer == 0) {
+                        const float spd = BREED_CFG[enemy_breed()].spd_add;
+                        const int cool = BREED_CFG[enemy_breed()].cool_sub;
                         e->vy = -4.4f;
-                        e->vx = (dx > 0 ? 1 : -1) * (1.4f + 0.15f * enemy_breed());
-                        e->timer = 130 - 10 * enemy_breed();
+                        e->vx = (dx > 0 ? 1 : -1) * (1.4f + spd);
+                        e->timer = 130 - cool;
                         e->state = 1;
                     }
                 } else {
                     e->state = 0;
                     if (e->timer == 0 && dist < 120.0f) {
-                        /* crouch telegraph: veterans wind up quicker */
+                        /* crouch telegraph: veterans wind up quicker. Stash
+                           the starting duration in `kind` (unused by frogs -
+                           bosses only) so the draw code can scale the 3-frame
+                           balloon animation to it instead of assuming 26. */
                         e->state = 2;
-                        e->timer = 26 - 3 * enemy_breed();
+                        e->timer = 26 - BREED_CFG[enemy_breed()].tele_sub;
+                        e->kind = e->timer;
                     }
                 }
                 if (e->vy > 0) e->vy = 0;
@@ -1309,7 +1346,11 @@ static void update_enemies(void) {
             if ((player.vy > 1.0f || (player.gliding && player.vy > 0.3f)) &&
                 player.x < e->x + w - 2 && player.x + PHIT_W > e->x + 2 &&
                 feet > e->y - 2 && feet < e->y + h * 0.55f) {
-                e->hp -= (e->type == T_BOSS) ? 1 : 3;
+                /* non-bosses always die to one stomp - "land on foes to
+                   squash them" is taught from isle 1 with no HP caveat, so
+                   the kill must hold regardless of breed HP bonuses (a flat
+                   3 damage let isle-6+ eagles at 4 HP survive a stomp) */
+                e->hp -= (e->type == T_BOSS) ? 1 : e->hp;
                 e->flash = 8;
                 player.vy = in_jump ? -5.8f : -3.8f;   /* hold jump = high bounce */
                 player.air_jumps = 1;                  /* stomp refreshes the air jump */
@@ -1457,6 +1498,26 @@ static void update_pickups(void) {
     }
 }
 
+/* Lightning has its own lifecycle, decoupled from update_particles: that
+   function is skipped during hit-stop and never runs during ST_PAUSE, which
+   used to strand an in-progress flash - frozen at near-peak brightness
+   through freeze, and popping off/on across a pause. Call this once per
+   tick for every state that isn't ST_PAUSE (the draw call mirrors that, so
+   pausing shows the flash held statically instead of vanishing). New bolts
+   only start during genuine active gameplay (fade==0, freeze==0) so a
+   strike never lands on top of a death fade-to-black. */
+static void update_lightning(void) {
+    if (weather_mode() != 2) return;
+    if (fade == 0 && freeze == 0) {
+        if (play_ticks > next_bolt) {
+            lightning_t = 14;
+            next_bolt = play_ticks + 420 + (unsigned long)(rand() % 480);
+            shake = 2;
+        }
+    }
+    if (lightning_t > 0) lightning_t--;
+}
+
 static void update_particles(void) {
     for (int i = 0; i < MAX_PARTICLES; i++) {
         if (particles[i].life <= 0) continue;
@@ -1485,10 +1546,14 @@ static void update_particles(void) {
         if (!fxs[i].active) continue;
         if (ticks % 4 == 0 && ++fxs[i].frame >= 6) fxs[i].active = 0;
     }
-    /* isle atmosphere */
+    /* isle atmosphere. Modes 1 and 3 only ever DRAW the even-indexed half
+       (draw_entities strides by 2 - "fewer, precious lights"), so their
+       update strides match: simulating the invisible odd half every tick
+       was pure wasted work on the Vita's 444MHz core. Mode 2 (rain) draws
+       all N_WEATHER and keeps updating all of them. */
     switch (weather_mode()) {
     case 1:                          /* fireflies wander lazily */
-        for (int i = 0; i < N_WEATHER; i++) {
+        for (int i = 0; i < N_WEATHER; i += 2) {
             wparts[i].phase += 0.03f;
             wparts[i].x += sinf(wparts[i].phase) * 0.35f;
             wparts[i].y += cosf(wparts[i].phase * 0.7f) * 0.25f;
@@ -1500,7 +1565,9 @@ static void update_particles(void) {
             if (wparts[i].y > cam_y + LOGICAL_H + 30) wparts[i].y -= LOGICAL_H + 60;
         }
         break;
-    case 2:                          /* driving rain + the odd bolt */
+    case 2:                          /* driving rain (the bolt lives in
+                                         update_lightning, called every tick
+                                         so it can never get stuck) */
         for (int i = 0; i < N_WEATHER; i++) {
             wparts[i].x += wparts[i].vx;
             wparts[i].y += wparts[i].vy;
@@ -1509,15 +1576,9 @@ static void update_particles(void) {
                 wparts[i].x = cam_x + (float)(rand() % (LOGICAL_W + 80)) - 20;
             }
         }
-        if (play_ticks > next_bolt) {
-            lightning_t = 14;
-            next_bolt = play_ticks + 420 + (unsigned long)(rand() % 480);
-            shake = 2;
-        }
-        if (lightning_t > 0) lightning_t--;
         break;
     case 3:                          /* embers rise off the throne */
-        for (int i = 0; i < N_WEATHER; i++) {
+        for (int i = 0; i < N_WEATHER; i += 2) {
             wparts[i].phase += 0.04f;
             wparts[i].x += sinf(wparts[i].phase) * 0.3f;
             wparts[i].y -= 0.55f;
@@ -1525,6 +1586,12 @@ static void update_particles(void) {
                 wparts[i].y = cam_y + LOGICAL_H + 10;
                 wparts[i].x = cam_x + (float)(rand() % LOGICAL_W);
             }
+            /* horizontal wrap too: embers rise at only 0.55px/frame and used
+               to re-pick x only once per ~8s vertical recycle, so a camera
+               pan between recycles could leave one drifted off-screen for
+               most of that window */
+            if (wparts[i].x < cam_x - 20) wparts[i].x += LOGICAL_W + 40;
+            if (wparts[i].x > cam_x + LOGICAL_W + 20) wparts[i].x -= LOGICAL_W + 40;
         }
         break;
     }
@@ -1712,7 +1779,13 @@ static void draw_enemy(Enemy *e) {
         } else {
             int fi = 0;
             if (e->state == 2) {
-                fi = 3 - e->timer / 9;
+                /* scale the 3-frame balloon to however long THIS telegraph
+                   is (e->kind holds the starting timer - see update_enemies)
+                   so a shortened veteran wind-up still plays all 3 frames
+                   instead of skipping the first one */
+                int dur = e->kind > 0 ? e->kind : 26;
+                int bucket = (dur + 2) / 3;
+                fi = 3 - e->timer / bucket;
                 if (fi < 1) fi = 1;
                 if (fi > 3) fi = 3;
             }
@@ -1909,16 +1982,26 @@ static void draw_entities(void) {
 
     /* isle atmosphere: fireflies / rain / rising embers */
     switch (weather_mode()) {
-    case 1:
-        for (int i = 0; i < N_WEATHER; i += 2) {   /* fewer, precious lights */
+    case 1:                          /* fewer, precious lights */
+        /* Two passes, not textured-copy/fill-rect alternated per particle:
+           SDL2's batcher flushes on every switch between the two draw
+           kinds, so interleaving turned ~35 visible fireflies into ~70
+           forced batch flushes/frame. All glows first (one color mod for
+           the whole pass - only alpha varies, and alpha mod doesn't break
+           batching), then all core dots with one set_color. */
+        SDL_SetTextureColorMod(tex_glow, 255, 226, 130);
+        for (int i = 0; i < N_WEATHER; i += 2) {
             int lx = (int)(wparts[i].x - cam_x), ly = (int)(wparts[i].y - cam_y);
             if (lx < -8 || lx >= LOGICAL_W + 8 || ly < -8 || ly >= LOGICAL_H + 8) continue;
             Uint8 a = (Uint8)(70 + 55 * sinf(wparts[i].phase * 1.7f));
-            SDL_SetTextureColorMod(tex_glow, 255, 226, 130);
             SDL_SetTextureAlphaMod(tex_glow, a);
             SDL_Rect g = {lx - 5, ly - 5, 10, 10};
             SDL_RenderCopy(g_ren, tex_glow, NULL, &g);
-            set_color(0xFFFFF2C0);
+        }
+        set_color(0xFFFFF2C0);
+        for (int i = 0; i < N_WEATHER; i += 2) {
+            int lx = (int)(wparts[i].x - cam_x), ly = (int)(wparts[i].y - cam_y);
+            if (lx < -8 || lx >= LOGICAL_W + 8 || ly < -8 || ly >= LOGICAL_H + 8) continue;
             SDL_Rect c = {lx, ly, 1, 1};
             SDL_RenderFillRect(g_ren, &c);
         }
@@ -1932,15 +2015,19 @@ static void draw_entities(void) {
             SDL_RenderDrawLine(g_ren, lx, ly, lx - 2, ly + 7);
         }
         break;
-    case 3:
+    case 3:                          /* same two-pass batching as case 1 */
+        SDL_SetTextureColorMod(tex_glow, 255, 140, 60);
         for (int i = 0; i < N_WEATHER; i += 2) {
             int lx = (int)(wparts[i].x - cam_x), ly = (int)(wparts[i].y - cam_y);
             if (lx < -8 || lx >= LOGICAL_W + 8 || ly < -8 || ly >= LOGICAL_H + 8) continue;
-            SDL_SetTextureColorMod(tex_glow, 255, 140, 60);
             SDL_SetTextureAlphaMod(tex_glow, (Uint8)(60 + 40 * sinf(wparts[i].phase * 2.1f)));
             SDL_Rect g = {lx - 4, ly - 4, 8, 8};
             SDL_RenderCopy(g_ren, tex_glow, NULL, &g);
-            set_color(0xFFFFB050);
+        }
+        set_color(0xFFFFB050);
+        for (int i = 0; i < N_WEATHER; i += 2) {
+            int lx = (int)(wparts[i].x - cam_x), ly = (int)(wparts[i].y - cam_y);
+            if (lx < -8 || lx >= LOGICAL_W + 8 || ly < -8 || ly >= LOGICAL_H + 8) continue;
             SDL_Rect c = {lx, ly, 1, 1};
             SDL_RenderFillRect(g_ren, &c);
         }
@@ -2458,6 +2545,49 @@ static int run_tests(void) {
         else printf("ok  ground-stability (on_ground held for 60 idle frames)\n");
     }
 
+    /* void-fall must never heal: respawn() always restores full HP (the
+       same as any other death), so subtracting a flat 1 from that full-heal
+       value nets a HEAL whenever the player fell below hp_max - 1. The
+       penalty has to be capped by what the player actually fell with. */
+    player.hp_max = 3;
+    player.hp = 1; void_fell = 1; player.spawnx = 150; player.spawny = 300;
+    respawn();
+    if (player.hp != 1)
+        { printf("FAIL void-fall-heal: hp=%d after falling at 1 (want 1, no heal)\n",
+                 player.hp); fail++; }
+    else printf("ok  void-fall-heal (fell at 1 HP, respawned at 1, no free heal)\n");
+
+    player.hp = player.hp_max; void_fell = 1;
+    respawn();
+    if (player.hp != player.hp_max - 1)
+        { printf("FAIL void-fall-cost: hp=%d after falling at full (want %d)\n",
+                 player.hp, player.hp_max - 1); fail++; }
+    else printf("ok  void-fall-cost (fell at full HP, respawned at hp_max-1)\n");
+
+    /* stomp must one-shot every non-boss enemy regardless of breed HP -
+       "land on foes to squash them" is taught with no HP caveat; isle 6+
+       eagles at 4 HP (breed bonus) used to survive a flat 3-damage stomp.
+       Drive this through the REAL update_enemies() stomp path (like the
+       frog stomp test above), not a hand-computed formula, so it actually
+       exercises the game's own code instead of restating the fix. */
+    cur_level = 5;                       /* RUINED HAMLET: breed tier 2 */
+    n_enemies = 0;
+    Enemy *eg = add_enemy(T_EAGLE, 146, 380);
+    if (eg->hp != 4) {
+        printf("FAIL breed-hp setup: eagle hp=%d at breed %d (want 4)\n",
+               eg->hp, enemy_breed());
+        fail++;
+    } else {
+        player.x = 148; player.y = 363; player.vy = 3; player.on_ground = 0;
+        player.air_jumps = 0; player.inv = 0; player.gliding = 0;
+        update_enemies();
+        if (eg->alive)
+            { printf("FAIL stomp-one-shot: breed-2 eagle survives at %d hp\n", eg->hp); fail++; }
+        else printf("ok  stomp-one-shot (breed-2 eagle still dies in one stomp)\n");
+    }
+    eg->alive = 0;
+    cur_level = 0;
+
     printf(fail ? "TESTS FAILED: %d\n" : "ALL TESTS PASSED\n", fail);
     return fail;
 }
@@ -2615,6 +2745,7 @@ int main(int argc, char *argv[]) {
                     update_pickups();
                     update_particles();
                 }
+                update_lightning();   /* every ST_PLAY tick - see its comment */
                 if (intro_life > 0) intro_life--;
                 update_camera();
                 play_ticks++;
@@ -2643,7 +2774,10 @@ int main(int argc, char *argv[]) {
         draw_entities();
         draw_glow_pass();
         draw_foreground();
-        if (lightning_t > 0 && game_state == ST_PLAY) {
+        /* PAUSE included: update_lightning() doesn't run there either, so
+           the flash just holds at its last value instead of popping off and
+           snapping back once unpaused. */
+        if (lightning_t > 0 && (game_state == ST_PLAY || game_state == ST_PAUSE)) {
             SDL_SetRenderDrawBlendMode(g_ren, SDL_BLENDMODE_BLEND);
             SDL_SetRenderDrawColor(g_ren, 235, 240, 255, (Uint8)(lightning_t * 13));
             SDL_Rect fl = {0, 0, LOGICAL_W, LOGICAL_H};

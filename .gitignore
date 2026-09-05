@@ -4,3 +4,5 @@ build-vita/
 skyrift-dev
 vitasdk-*.log
 skyrift-dev
+__pycache__/
+*.pyc

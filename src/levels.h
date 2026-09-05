@@ -327,18 +327,20 @@ static const char *LEVELS[NUM_LEVELS][MAP_H] = {
 };
 
 typedef struct { const char *name; int req_gems; int boss_kind;
-                 Uint8 br, bg, bb, jr, jg, jb; } LevelCfg;
+                 Uint8 br, bg, bb, jr, jg, jb;
+                 int weather;   /* 0 none 1 fireflies 2 rain 3 embers */
+                 int breed; } LevelCfg;   /* enemy strain tier 0-3 */
 static const LevelCfg LEVEL_CFG[NUM_LEVELS] = {
-    {"VERDANT WOODS", 12, -1, 255,255,255, 255,255,255},
-    {"TWILIGHT HOLLOW", 12, -1, 140,150,210, 120,120,180},
-    {"CANOPY HEIGHTS", 12, 0, 255,240,210, 235,255,215},
-    {"SUNKEN GROTTO", 12, -1, 110,170,195, 90,150,170},
-    {"WINDY CLIFFS", 12, 1, 255,225,185, 235,215,190},
-    {"RUINED HAMLET", 12, -1, 235,185,160, 215,175,160},
-    {"THE UNDERROOT", 12, 2, 150,125,195, 135,115,185},
-    {"SKYBRIDGE", 12, -1, 205,230,255, 215,235,255},
-    {"STORM ASCENT", 12, -1, 160,180,225, 150,170,215},
-    {"TYRANTS THRONE", 0, 3, 255,205,175, 255,215,195},
+    {"VERDANT WOODS", 12, -1, 255,255,255, 255,255,255, 0, 0},
+    {"TWILIGHT HOLLOW", 12, -1, 140,150,210, 120,120,180, 1, 0},
+    {"CANOPY HEIGHTS", 12, 0, 255,240,210, 235,255,215, 0, 1},
+    {"SUNKEN GROTTO", 12, -1, 110,170,195, 90,150,170, 0, 1},
+    {"WINDY CLIFFS", 12, 1, 255,225,185, 235,215,190, 0, 1},
+    {"RUINED HAMLET", 12, -1, 235,185,160, 215,175,160, 0, 2},
+    {"THE UNDERROOT", 12, 2, 150,125,195, 135,115,185, 1, 2},
+    {"SKYBRIDGE", 12, -1, 205,230,255, 215,235,255, 0, 2},
+    {"STORM ASCENT", 12, -1, 160,180,225, 150,170,215, 2, 3},
+    {"TYRANTS THRONE", 0, 3, 255,205,175, 255,215,195, 3, 3},
 };
 
 typedef struct { const char *name; int hp; } BossCfg;

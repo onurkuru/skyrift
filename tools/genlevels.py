@@ -87,7 +87,9 @@ def validate(s, name):
                 cell=drop_to_stand(r,c)
                 assert cell in seen, f"{name}: {ch} at ({r},{c}) unreachable"
 
-def add(g,name,req,boss,back,jungle):
+def add(g,name,req,boss,back,jungle,weather=0,breed=0):
+    # weather: 0 none, 1 fireflies, 2 rain+lightning, 3 embers
+    # breed:   enemy strain tier 0-3 (speed/HP/telegraph scaling in main.c)
     s=[''.join(r) for r in g]
     assert sum(r.count('P') for r in s)==1, name+" P"
     assert sum(r.count('D') for r in s)==1, name+" D"
@@ -102,7 +104,7 @@ def add(g,name,req,boss,back,jungle):
     import reach
     probs=reach.audit(s,name,req)
     assert not probs, name+" UNPLAYABLE:\n  "+"\n  ".join(probs)
-    levels.append(s); cfgs.append((name,req,boss,back,jungle))
+    levels.append(s); cfgs.append((name,req,boss,back,jungle,weather,breed))
     print(f"{name}: gems={ng} req={req} boss={boss}  [physics-verified]")
 
 # ---------- L1 VERDANT WOODS (forest intro, door) ----------
@@ -140,7 +142,7 @@ L1=[
 ]
 g=[list(r.ljust(W)) for r in L1]
 grounded(g,23,80,'D')
-add(g,"VERDANT WOODS",12,-1,(255,255,255),(255,255,255))
+add(g,"VERDANT WOODS",12,-1,(255,255,255),(255,255,255),weather=0,breed=0)
 
 # ---------- L2 TWILIGHT HOLLOW (cave galleries, door) ----------
 g=new()
@@ -163,7 +165,7 @@ for r,c in [(16,40),(25,30),(25,56)]: grounded(g,r,c,'F')
 for r,c in [(16,70),(25,16),(25,70)]: grounded(g,r,c,'O')
 grounded(g,16,30,'H'); grounded(g,25,40,'H')
 grounded(g,16,60,'C'); grounded(g,25,20,'C')
-add(g,"TWILIGHT HOLLOW",12,-1,(140,150,210),(120,120,180))
+add(g,"TWILIGHT HOLLOW",12,-1,(140,150,210),(120,120,180),weather=1,breed=0)
 
 # ---------- L3 CANOPY HEIGHTS (tall trees, frog boss) ----------
 g=new()
@@ -190,7 +192,7 @@ for r,c in [(24,20),(24,56)]: grounded(g,r,c,'F')
 grounded(g,24,38,'O')
 grounded(g,4,36,'H'); grounded(g,24,62,'H')
 grounded(g,24,10,'C'); grounded(g,21,68,'C')
-add(g,"CANOPY HEIGHTS",12,0,(255,240,210),(235,255,215))
+add(g,"CANOPY HEIGHTS",12,0,(255,240,210),(235,255,215),weather=0,breed=1)
 
 # ---------- L4 SUNKEN GROTTO (winding tunnels, door) ----------
 g=new()
@@ -216,7 +218,7 @@ for r,c in [(11,26),(25,36)]: grounded(g,r,c,'F')
 for r,c in [(17,50),(25,60)]: grounded(g,r,c,"O")
 grounded(g,10,44,'H'); grounded(g,25,20,'H')
 grounded(g,11,34,'C'); grounded(g,18,62,'C')
-add(g,"SUNKEN GROTTO",12,-1,(110,170,195),(90,150,170))
+add(g,"SUNKEN GROTTO",12,-1,(110,170,195),(90,150,170),weather=0,breed=1)
 
 # ---------- L5 WINDY CLIFFS (terraces up-right, possum boss) ----------
 g=new()
@@ -233,7 +235,7 @@ grounded(g,21,16,'F'); grounded(g,13,44,'F')
 grounded(g,17,30,'O'); grounded(g,9,58,'O')
 grounded(g,13,48,'H'); grounded(g,6,72,'H')
 grounded(g,21,24,'C'); grounded(g,7,74,'C')
-add(g,"WINDY CLIFFS",12,1,(255,225,185),(235,215,190))
+add(g,"WINDY CLIFFS",12,1,(255,225,185),(235,215,190),weather=0,breed=1)
 
 # ---------- L6 RUINED HAMLET (broken ground, rooftops, door) ----------
 g=new()
@@ -250,7 +252,7 @@ grounded(g,23,30,'F'); grounded(g,23,54,'F')
 grounded(g,23,8,'O'); grounded(g,23,76,'O')
 grounded(g,10,36,'H'); grounded(g,23,62,'H')
 grounded(g,23,16,'C'); grounded(g,23,74,'C')
-add(g,"RUINED HAMLET",12,-1,(235,185,160),(215,175,160))
+add(g,"RUINED HAMLET",12,-1,(235,185,160),(215,175,160),weather=0,breed=2)
 
 # ---------- L7 THE UNDERROOT (maze, purple eagle boss) ----------
 g=new()
@@ -272,7 +274,7 @@ grounded(g,14,20,'F'); grounded(g,25,16,'F')
 grounded(g,7,40,'O'); grounded(g,20,52,'O')
 grounded(g,14,34,'H'); grounded(g,25,38,'H')
 grounded(g,7,14,'C'); grounded(g,20,46,'C')
-add(g,"THE UNDERROOT",12,2,(150,125,195),(135,115,185))
+add(g,"THE UNDERROOT",12,2,(150,125,195),(135,115,185),weather=1,breed=2)
 
 # ---------- L8 SKYBRIDGE (island chain over the void, door) ----------
 g=new()
@@ -291,7 +293,7 @@ for r,c in [(15,20),(13,40),(14,62),(11,78),(4,30),(4,56)]: put(g,r,c,'E')
 grounded(g,16,28,'F'); grounded(g,15,70,'O')
 grounded(g,5,42,'H'); grounded(g,15,50,'H')
 grounded(g,20,38,'C'); grounded(g,15,73,'C')
-add(g,"SKYBRIDGE",12,-1,(205,230,255),(215,235,255))
+add(g,"SKYBRIDGE",12,-1,(205,230,255),(215,235,255),weather=0,breed=2)
 
 # ---------- L9 STORM ASCENT (vertical zigzag climb, door) ----------
 g=new()
@@ -307,7 +309,7 @@ for r,c in [(20,30),(14,18),(10,40),(6,52),(2,44),(12,60),(4,74)]: put(g,r,c,'E'
 grounded(g,16,24,'F'); grounded(g,7,60,'O')
 grounded(g,13,36,'H'); grounded(g,4,68,'H')
 grounded(g,16,26,'C'); grounded(g,7,58,'C')
-add(g,"STORM ASCENT",12,-1,(160,180,225),(150,170,215))
+add(g,"STORM ASCENT",12,-1,(160,180,225),(150,170,215),weather=2,breed=3)
 
 # ---------- L10 TYRANT'S THRONE (sky arena, final boss) ----------
 g=new()
@@ -326,7 +328,7 @@ for r,c in [(22,26),(17,40),(11,32),(10,58),(14,70),(4,50)]: put(g,r,c,'E')
 grounded(g,5,74,'F'); grounded(g,20,32,'O')
 grounded(g,9,47,'H'); grounded(g,3,65,'H')
 grounded(g,20,29,'C'); grounded(g,8,63,'C')
-add(g,"TYRANTS THRONE",0,3,(255,205,175),(255,215,195))
+add(g,"TYRANTS THRONE",0,3,(255,205,175),(255,215,195),weather=3,breed=3)
 
 # ---------- emit C header ----------
 out=[]
@@ -344,10 +346,12 @@ for s in levels:
 out.append("};")
 out.append("")
 out.append("typedef struct { const char *name; int req_gems; int boss_kind;")
-out.append("                 Uint8 br, bg, bb, jr, jg, jb; } LevelCfg;")
+out.append("                 Uint8 br, bg, bb, jr, jg, jb;")
+out.append("                 int weather;   /* 0 none 1 fireflies 2 rain 3 embers */")
+out.append("                 int breed; } LevelCfg;   /* enemy strain tier 0-3 */")
 out.append("static const LevelCfg LEVEL_CFG[NUM_LEVELS] = {")
-for (name,req,boss,(br,bg,bb),(jr,jg,jb)) in cfgs:
-    out.append(f'    {{"{name}", {req}, {boss}, {br},{bg},{bb}, {jr},{jg},{jb}}},')
+for (name,req,boss,(br,bg,bb),(jr,jg,jb),weather,breed) in cfgs:
+    out.append(f'    {{"{name}", {req}, {boss}, {br},{bg},{bb}, {jr},{jg},{jb}, {weather}, {breed}}},')
 out.append("};")
 out.append("")
 out.append("typedef struct { const char *name; int hp; } BossCfg;")
