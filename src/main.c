@@ -75,6 +75,7 @@
 #define SCORE_GROUND 40
 #define SCORE_BOSS   1000
 #define SCORE_CHERRY 25
+#define SCORE_FLAWLESS 500   /* clear an isle, all gems, zero damage taken */
 
 /* level thresholds: reaching score unlocks LV2..LV6 skills */
 static const int LEVEL_XP[5] = {250, 700, 1400, 2400, 3800};
@@ -191,6 +192,7 @@ enum { ST_TITLE, ST_STORY, ST_PLAY, ST_PAUSE, ST_END };
 static int game_state = ST_TITLE;
 static int fade;                     /* death transition: 50..26 out, 25..0 in */
 static int void_fell;                /* fell off the map: respawn costs 1 HP */
+static int perfect_run;              /* no damage taken on the current isle */
 
 /* per-isle atmosphere: 0 none, 1 fireflies, 2 rain+lightning, 3 embers */
 #define N_WEATHER 70
@@ -765,6 +767,17 @@ static Enemy *add_enemy(int type, float x, float y) {
     return e;
 }
 
+/* Flawless bonus: every gem, zero damage, no new tiles or physics involved -
+   purely a scoring reward layered on state the game already tracks
+   (gems_collected/total_gems, perfect_run cleared by hurt_player). Pulled
+   out as its own function so run_tests() can exercise the exact code path
+   instead of restating its condition. */
+static void maybe_award_flawless(void) {
+    if (!perfect_run || gems_collected != total_gems) return;
+    add_score(SCORE_FLAWLESS, player.x, player.y - 24);
+    spawn_popup(player.x - 22, player.y - 38, 0xFFF2CE45, "FLAWLESS!");
+}
+
 /* ---------- init ---------- */
 static void load_level(int idx) {
     cur_level = idx;
@@ -835,6 +848,7 @@ place:
     player.dash = player.dash_cd = 0;
     combo = 0; combo_timer = 0;
     void_fell = 0;
+    perfect_run = 1;
     intro_life = 170;                  /* isle name card */
     /* Seed weather around the SPAWN camera, not the whole map: the camera
        starts centred on the player and recycling is camera-relative, so a
@@ -1112,6 +1126,7 @@ static void update_player(void) {
 
 static void hurt_player(void) {
     if (player.inv > 0 || fade > 0) return;
+    perfect_run = 0;
     player.hp--;
     player.inv = 90;
     player.vy = -3.0f;
@@ -1160,16 +1175,42 @@ static void update_enemies(void) {
         float dist = sqrtf(dx * dx + dy * dy);
 
         switch (e->type) {
-        case T_EAGLE:
-            if (dist < 100.0f && dist > 1.0f) {
-                e->vx += (dx / dist) * 0.05f;
-                e->vy += (dy / dist) * 0.05f;
+        case T_EAGLE: {
+            /* Rift-touched eagles (breed 3, isles 9-10) add a telegraphed
+               dive attack - real difficulty from AI alone, no map changes,
+               so it can never affect tools/reach.py's beatability proof
+               (that validator only ever simulates player physics). State
+               reuses fields already idle on non-boss eagles: 0 = patrol/
+               chase (unchanged below), 2 = hover-and-flash telegraph,
+               1 = the dive itself, then a cooldown back in state 0. */
+            int diver = enemy_breed() >= 3;
+            if (diver && e->state == 2) {
+                if (e->timer > 0) e->timer--;
+                e->vx *= 0.8f; e->vy *= 0.8f;          /* hang in the air */
+                if (e->timer == 0 && dist > 1.0f) {
+                    e->state = 1; e->timer = 45;
+                    float dspd = 3.6f;
+                    e->vx = (dx / dist) * dspd; e->vy = (dy / dist) * dspd;
+                    shake = 2;
+                }
+            } else if (diver && e->state == 1) {
+                if (e->timer > 0) e->timer--;
+                if (e->timer == 0) { e->state = 0; e->timer = 150; }
             } else {
-                e->vx += (e->homex - e->x) * 0.002f;
-                e->vy += (e->homey - e->y) * 0.002f;
-            }
-            e->vx *= 0.96f; e->vy *= 0.96f;
-            {   /* cap chase speed so eagles stay dodgeable; veteran breeds
+                if (diver && e->timer > 0) e->timer--;
+                if (diver && e->state == 0 && e->timer == 0 &&
+                    dy > 40.0f && dist < 150.0f) {
+                    e->state = 2; e->timer = 20;       /* telegraph, dodgeable */
+                    e->vx = e->vy = 0;
+                } else if (dist < 100.0f && dist > 1.0f) {
+                    e->vx += (dx / dist) * 0.05f;
+                    e->vy += (dy / dist) * 0.05f;
+                } else {
+                    e->vx += (e->homex - e->x) * 0.002f;
+                    e->vy += (e->homey - e->y) * 0.002f;
+                }
+                e->vx *= 0.96f; e->vy *= 0.96f;
+                /* cap chase speed so eagles stay dodgeable; veteran breeds
                    on later isles fly noticeably harder. (Accel 0.05/frame
                    with 0.96 damping settles the chase at ~1.2px/frame in
                    practice, well under any of these caps - this bounds
@@ -1182,12 +1223,13 @@ static void update_enemies(void) {
             {
                 float ex = e->x + e->vx;
                 if (!hard_at(ex + w / 2, e->y + h / 2)) e->x = ex;
-                else e->vx *= -0.6f;
-                float ey = e->y + e->vy + sinf(e->bob) * 0.3f;
+                else { e->vx *= -0.6f; if (e->state == 1) e->state = 0; }
+                float ey = e->y + e->vy + (e->state == 0 ? sinf(e->bob) * 0.3f : 0);
                 if (!hard_at(e->x + w / 2, ey + h / 2)) e->y = ey;
-                else e->vy *= -0.6f;
+                else { e->vy *= -0.6f; if (e->state == 1) { e->state = 0; e->timer = 150; } }
             }
             break;
+        }
 
         case T_FROG: {
             e->vy += 0.3f;
@@ -1760,6 +1802,8 @@ static void draw_enemy(Enemy *e) {
     case T_EAGLE: {
         SDL_Rect src = {(int)((ticks / 6 + (long)(e - enemies)) % 4) * 40, 0, 40, 41};
         if (e->flash > 0) SDL_SetTextureColorMod(tex_eagle, 255, 80, 80);
+        else if (e->state == 2 && (ticks / 3) % 2)   /* dive telegraph flash */
+            SDL_SetTextureColorMod(tex_eagle, 255, 250, 240);
         else SDL_SetTextureColorMod(tex_eagle, bt_c[0], bt_c[1], bt_c[2]);
         SDL_Rect d = {(int)(e->x - cam_x + g_shx) - 12,
                       (int)(e->y - cam_y + g_shy) - 12, 40, 41};
@@ -2586,7 +2630,45 @@ static int run_tests(void) {
         else printf("ok  stomp-one-shot (breed-2 eagle still dies in one stomp)\n");
     }
     eg->alive = 0;
+
+    /* rift-touched (breed 3) eagles telegraph before diving: hover-flash
+       for 20 frames, then dive straight at the player's position at the
+       moment the telegraph ends - real difficulty from AI alone, so it
+       can never touch tools/reach.py's beatability guarantee (map/physics
+       untouched). Verify the state machine through the real update path. */
+    cur_level = 8;                       /* STORM ASCENT: breed tier 3 */
+    n_enemies = 0;
+    Enemy *dv = add_enemy(T_EAGLE, 200, 100);
+    player.x = 200; player.y = 180; player.on_ground = 1; player.vy = 0;
+    update_enemies();
+    if (dv->state != 2)
+        { printf("FAIL eagle-dive-telegraph: state=%d (want 2)\n", dv->state); fail++; }
+    else {
+        for (int i = 0; i < 25 && dv->state == 2; i++) update_enemies();
+        if (dv->state != 1 || dv->vy <= 0)
+            { printf("FAIL eagle-dive: state=%d vy=%.2f (want state 1, vy > 0)\n",
+                     dv->state, dv->vy); fail++; }
+        else printf("ok  eagle-dive (telegraphed, then dove at vy=%.2f)\n", dv->vy);
+    }
+    dv->alive = 0;
     cur_level = 0;
+
+    /* flawless bonus must fire through the real advance path */
+    total_gems = 5; gems_collected = 5; perfect_run = 1;
+    player.x = 150; player.y = 300;
+    int score_before = score;
+    maybe_award_flawless();
+    if (score != score_before + SCORE_FLAWLESS)
+        { printf("FAIL flawless-award: score %d -> %d (want +%d)\n",
+                 score_before, score, SCORE_FLAWLESS); fail++; }
+    else printf("ok  flawless-award (all gems + no damage -> +%d)\n", SCORE_FLAWLESS);
+
+    score_before = score;
+    perfect_run = 0;                     /* took a hit this isle */
+    maybe_award_flawless();
+    if (score != score_before)
+        { printf("FAIL flawless-skip: score changed after taking damage\n"); fail++; }
+    else printf("ok  flawless-skip (no bonus once hit)\n");
 
     printf(fail ? "TESTS FAILED: %d\n" : "ALL TESTS PASSED\n", fail);
     return fail;
@@ -2716,6 +2798,7 @@ int main(int argc, char *argv[]) {
                     if (fade == 25) {
                         if (advancing) {
                             advancing = 0;
+                            maybe_award_flawless();
                             if (shards < 9) shards++;   /* nine shards, ten doors */
                             /* persist the record each isle: a Vita closed from
                                the LiveArea never reaches the exit-time save */
