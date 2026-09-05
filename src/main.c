@@ -146,6 +146,7 @@ typedef struct {
     float dashx, dashy;            /* dash direction */
     int coyote;                    /* grace frames to jump after leaving a ledge */
     int land_t, jump_t;            /* squash & stretch timers */
+    int hurt_t;                    /* flinch-tilt timer, set on real damage */
     float spawnx, spawny, anim;
 } Player;
 
@@ -866,7 +867,7 @@ place:
     }
     player.hp = player.hp_max;
     player.inv = 60;   /* short grace after entering an isle */
-    player.gliding = 0; player.air_jumps = 1; player.spin_t = 0;
+    player.gliding = 0; player.air_jumps = 1; player.spin_t = 0; player.hurt_t = 0;
     player.vx = player.vy = 0; player.facing = 1; player.anim = 0;
     player.dash = player.dash_cd = 0;
     combo = 0; combo_timer = 0;
@@ -921,7 +922,7 @@ static void respawn(void) {
     player.x = player.spawnx; player.y = player.spawny;
     player.vx = player.vy = 0;
     player.hp = player.hp_max; player.inv = 90; player.gliding = 0;
-    player.air_jumps = 1; player.spin_t = 0;
+    player.air_jumps = 1; player.spin_t = 0; player.hurt_t = 0;
     if (fell_penalty) {               /* falling off the isles isn't free */
         int capped = player.hp_max - 1;
         if (pre_fall_hp < capped) capped = pre_fall_hp;
@@ -1120,6 +1121,7 @@ static void update_player(void) {
     if (player.land_t > 0) player.land_t--;
     if (player.jump_t > 0) player.jump_t--;
     if (player.spin_t > 0) player.spin_t--;
+    if (player.hurt_t > 0) player.hurt_t--;
 
     player.anim += fabsf(player.vx) * 0.15f;
 
@@ -1152,6 +1154,7 @@ static void hurt_player(void) {
     perfect_run = 0;
     player.hp--;
     player.inv = 90;
+    player.hurt_t = 14;                  /* brief recoil tilt, see draw */
     player.vy = -3.0f;
     shake = 5;
     freeze = 5;
@@ -2118,9 +2121,16 @@ static void draw_entities(void) {
         SDL_Texture *sheet;
         SDL_Rect src_r;
         int fw = 33, fh = 32;
-        int idle_squash = 0;
+        int idle_squash = 0, dash_stretch = 0;
         double angle = 0;
-        if (!player.on_ground) {
+        if (player.dash > 0) {
+            /* dash streak: reuse the run sheet's most extended stride and
+               stretch it horizontally, the same squash & stretch trick used
+               for landing/jumping - no new art, reads as a burst of speed */
+            sheet = tex_hero_run;
+            src_r = (SDL_Rect){3 * fw, 0, fw, fh};
+            dash_stretch = 1;
+        } else if (!player.on_ground) {
             sheet = tex_hero_jump;
             int fi = player.vy < 0 ? 0 : 1;          /* rising / falling */
             if (player.spin_t > 0) {
@@ -2157,9 +2167,12 @@ static void draw_entities(void) {
             src_r = (SDL_Rect){fi * fw, 0, fw, fh};
         }
         int dw = fw, dh = fh;
-        if (player.land_t > 0)      { dw = fw + player.land_t; dh = fh - player.land_t / 2; }
+        if (dash_stretch)           { dw = fw + 7; dh = fh - 4; }
+        else if (player.land_t > 0) { dw = fw + player.land_t; dh = fh - player.land_t / 2; }
         else if (player.jump_t > 0) { dw = fw - player.jump_t / 2; dh = fh + player.jump_t / 2; }
         else if (idle_squash)       { dw = fw + 1; dh = fh - 1; }
+        if (player.hurt_t > 0)     /* recoil tilt, layered on any pose above */
+            angle += -18.0 * player.facing * ((double)player.hurt_t / 14.0);
         SDL_Rect d = {(int)(player.x - cam_x + sx) + PHIT_W / 2 - dw / 2,
                       (int)(player.y - cam_y + sy) + PHIT_H - dh, dw, dh};
         SDL_RendererFlip flip_p =
