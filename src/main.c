@@ -188,7 +188,7 @@ static int boss_active, victory;
 static int kills;
 
 /* game flow */
-enum { ST_TITLE, ST_STORY, ST_PLAY, ST_PAUSE, ST_END };
+enum { ST_TITLE, ST_STORY, ST_PLAY, ST_PAUSE, ST_END, ST_ISLE_STORY };
 static int game_state = ST_TITLE;
 static int fade;                     /* death transition: 50..26 out, 25..0 in */
 static int void_fell;                /* fell off the map: respawn costs 1 HP */
@@ -216,6 +216,29 @@ static const char *ISLE_SUB[10] = {
     "TIDES BELOW", "RUST FANG PROWLS", "WHAT THE STORM LEFT",
     "THE GALE WRAITH WAITS", "DONT LOOK DOWN", "RIDE THE RISING WIND",
     "RELIGHT THE BEACON",
+};
+/* two-line lore beat shown on ST_ISLE_STORY, right before isles 2-10 (index
+   0 has none - the opening ST_STORY screen already covers isle 1) */
+static const char *ISLE_LORE[10][2] = {
+    {"", ""},
+    {"ONE SHARD SINGS IN YOUR PACK.",
+     "THE WOODS GIVE WAY TO CAVES THAT REMEMBER NO SUN."},
+    {"SOMETHING VAST STIRS ABOVE THE CANOPY.",
+     "THE MIRE KING GUARDS ITS SHARD WITH TEETH AND SILENCE."},
+    {"THE MIRE KING'S ROAR FADES BEHIND YOU.",
+     "WATER FINDS EVERY CRACK IN THE STONE BELOW."},
+    {"THE WIND CUTS COLDER ON THE OPEN CLIFFS.",
+     "RUST FANG PATROLS THE TERRACES, TEETH LIKE OLD NAILS."},
+    {"RUST FANG'S DEN FALLS SILENT AT LAST.",
+     "BELOW, A HAMLET ROTS - ITS PEOPLE LONG SINCE FLOWN."},
+    {"ROOTS SWALLOW THE RUINS WHOLE.",
+     "THE GALE WRAITH NESTS WHERE NO LIGHT HAS EVER REACHED."},
+    {"THE WRAITH'S CRY STILL ECHOES BEHIND YOU.",
+     "AHEAD: BRIDGES OF OLD ROPE, STRUNG OVER NOTHING AT ALL."},
+    {"THE OLD WIND GATHERS ITS LAST STRENGTH HERE.",
+     "CLIMB THROUGH THE STORM, OR FALL WITH THE ISLES."},
+    {"NINE SHARDS BURN IN YOUR PACK - ONE ISLE REMAINS.",
+     "THE SKY TYRANT WAITS ON ITS THRONE OF STOLEN WIND."},
 };
 static unsigned long play_ticks;     /* gameplay time (for the clock) */
 #define MAX_CHECKPOINTS 4
@@ -2417,6 +2440,22 @@ static void draw_story(void) {
     }
 }
 
+static void draw_isle_story(void) {
+    draw_overlay_dim(190);
+    char num[16];
+    snprintf(num, sizeof num, "ISLE %d", cur_level + 1);
+    const char *nm = LEVEL_CFG[cur_level].name;
+    draw_text(LOGICAL_W / 2 - text_w(num, 1) / 2, 60, 1, 0xFF9BE3EA, num);
+    draw_text(LOGICAL_W / 2 - text_w(nm, 2) / 2, 72, 2, 0xFFF2CE45, nm);
+    const char *l0 = ISLE_LORE[cur_level][0], *l1 = ISLE_LORE[cur_level][1];
+    draw_text(LOGICAL_W / 2 - text_w(l0, 1) / 2, 128, 1, 0xFFF5F1E8, l0);
+    draw_text(LOGICAL_W / 2 - text_w(l1, 1) / 2, 142, 1, 0xFFF5F1E8, l1);
+    if ((ticks / 30) % 2) {
+        const char *pr = "PRESS Z / CROSS";
+        draw_text(LOGICAL_W / 2 - text_w(pr, 1) / 2, 210, 1, 0xFF9BE3EA, pr);
+    }
+}
+
 static void draw_end(void) {
     char buf[40];
     draw_overlay_dim(170);
@@ -2734,6 +2773,7 @@ int main(int argc, char *argv[]) {
         if (lv < 0) lv += NUM_LEVELS;   /* C modulo keeps the sign */
         load_level(lv);
     }
+    if (getenv("SKYRIFT_ISLESTORY") && cur_level > 0) game_state = ST_ISLE_STORY;
 
     cam_x = player.x - LOGICAL_W / 2.0f;
     cam_y = player.y - LOGICAL_H / 2.0f;
@@ -2792,6 +2832,16 @@ int main(int argc, char *argv[]) {
                 }
                 jump_prev = in_jump;
                 update_particles();
+            } else if (game_state == ST_ISLE_STORY) {
+                /* let the post-transition fade-in finish here too - it only
+                   ticks down inside the ST_PLAY branch below, so without
+                   this it would freeze mid-fade for as long as the player
+                   reads the lore, then the level would still be dark when
+                   gameplay resumes */
+                if (fade > 0) fade--;
+                if (in_jump && !jump_prev) { game_state = ST_PLAY; play_sfx(S_START); }
+                jump_prev = in_jump;
+                update_particles();
             } else if (game_state == ST_PLAY) {
                 if (fade > 0) {
                     fade--;
@@ -2815,6 +2865,13 @@ int main(int argc, char *argv[]) {
                                 load_level(cur_level + 1);
                                 cam_x = player.x - LOGICAL_W / 2.0f;
                                 cam_y = player.y - LOGICAL_H / 2.0f;
+                                /* a short lore beat before gameplay resumes;
+                                   the quick "ISLE N / NAME" card still plays
+                                   afterwards via intro_life, which freezes
+                                   here (it only ticks down in ST_PLAY) and
+                                   picks up fresh once the player dismisses
+                                   this screen */
+                                game_state = ST_ISLE_STORY;
                             }
                         } else respawn();
                     }
@@ -2869,6 +2926,7 @@ int main(int argc, char *argv[]) {
         SDL_RenderCopy(g_ren, tex_vignette, NULL, NULL);
         if (game_state == ST_TITLE) draw_title();
         else if (game_state == ST_STORY) draw_story();
+        else if (game_state == ST_ISLE_STORY) draw_isle_story();
         else if (game_state == ST_END) draw_end();
         else if (game_state == ST_PAUSE) draw_pause();
         else if (!getenv("SKYRIFT_NOHUD")) draw_hud();

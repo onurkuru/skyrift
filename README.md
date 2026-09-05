@@ -75,9 +75,15 @@ Tyrant on isle 10 and relight the Beacon.
 - **Enemies**: eagle (chases, speed-capped), frog (crouch-telegraphs its hop),
   opossum (patrols) + 4 bosses with minion waves and telegraphed attacks
 - **Enemy breeds**: later isles field tougher strains — frostbitten,
-  emberbacked, then rift-touched — faster, meaner, +1 HP from isle 6
+  emberbacked, then rift-touched — faster, meaner, +1 HP from isle 6.
+  Rift-touched eagles (isles 9-10) telegraph a dive attack: a hover-and-flash
+  warning, then a fast dive at wherever you're standing
+- **Flawless bonus**: clear an isle with every gem and zero damage taken for
+  a +500 score bonus and a banner
 - **Isle atmospheres**: fireflies in the hollows, driving rain and lightning
   over Storm Ascent, embers rising through the Tyrant's arena
+- **Between isles**: a short lore beat sets up what's ahead before each of
+  isles 2-10
 - Cherries heal; checkpoint signs move your respawn point **and heal you full**;
   falling off an isle costs 1 HP (never lethal)
 - Best score persists on device; completion time shown at the end
@@ -136,6 +142,8 @@ VitaShell FTP, press X → Install, launch from LiveArea.
 - `SKYRIFT_SHOT=/path.bmp ./skyrift` — capture one frame and exit
 - `SKYRIFT_LEVEL=n ./skyrift` — start on isle n (0-9)
 - `SKYRIFT_TITLE=1` — capture the title screen in shot mode
+- `SKYRIFT_ISLESTORY=1` (with `SKYRIFT_LEVEL=n`, n>0) — capture that isle's
+  between-isles lore screen in shot mode
 
 ## Credits & License
 
