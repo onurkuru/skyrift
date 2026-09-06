@@ -1717,20 +1717,36 @@ static void draw_jungle(float factor, float scale, Uint8 alpha, float ybase) {
     }
 }
 
-/* warm haze band at the horizon between jungle layers */
+/* horizon haze band - tinted per isle atmosphere so the lighting matches
+   the weather instead of sitting at one warm colour everywhere: cooler and
+   dimmer under rain, molten orange over the embers, cool moonlit teal
+   through the firefly hollows, warm and untouched elsewhere */
 static void draw_haze(void) {
-    SDL_SetTextureColorMod(tex_glow, 255, 240, 200);
-    SDL_SetTextureAlphaMod(tex_glow, 26);
+    switch (weather_mode()) {
+        case 1:  SDL_SetTextureColorMod(tex_glow, 140, 180, 210); break;
+        case 2:  SDL_SetTextureColorMod(tex_glow, 170, 190, 210); break;
+        case 3:  SDL_SetTextureColorMod(tex_glow, 255, 140, 70);  break;
+        default: SDL_SetTextureColorMod(tex_glow, 255, 240, 200); break;
+    }
+    SDL_SetTextureAlphaMod(tex_glow, weather_mode() == 2 ? 16 : 26);
     SDL_Rect d = {-100, 70 - (int)(cam_y * 0.1f), LOGICAL_W + 200, 140};
     SDL_RenderCopy(g_ren, tex_glow, NULL, &d);
 }
 
-/* diagonal god rays, slowly pulsing */
+/* diagonal god rays, slowly pulsing - dimmed to a thin overcast glow under
+   rain (the sun doesn't break through a storm), warmed to embers over the
+   Tyrant's throne, cooled to moonlight through the firefly hollows */
 static void draw_god_rays(void) {
-    SDL_SetTextureColorMod(tex_glow, 255, 245, 210);
+    Uint8 base = 12, amp = 7;
+    switch (weather_mode()) {
+        case 1:  SDL_SetTextureColorMod(tex_glow, 170, 200, 230); base = 6; amp = 4; break;
+        case 2:  SDL_SetTextureColorMod(tex_glow, 200, 210, 225); base = 3; amp = 2; break;
+        case 3:  SDL_SetTextureColorMod(tex_glow, 255, 160, 90);  base = 14; amp = 9; break;
+        default: SDL_SetTextureColorMod(tex_glow, 255, 245, 210); break;
+    }
     for (int i = 0; i < 4; i++) {
         float pulse = sinf((float)ticks * 0.008f + (float)i * 1.7f);
-        Uint8 a = (Uint8)(12 + 7 * (pulse + 1));
+        Uint8 a = (Uint8)(base + amp * (pulse + 1));
         SDL_SetTextureAlphaMod(tex_glow, a);
         int x = (int)((float)(90 + i * 120) - fmodf(cam_x * 0.25f, 120.0f));
         SDL_Rect d = {x, -60, 46, 400};
