@@ -1816,10 +1816,13 @@ static void draw_enemy(Enemy *e) {
     float w, h; enemy_size(e, &w, &h);
     int flip = (player.x + 6 > e->x + w / 2);
     const Uint8 *bt_c = BREED_TINT[enemy_breed()];
-    /* elite breeds carry a faint aura so they pop against the foliage */
+    /* elite breeds carry a faint aura so they pop against the foliage - it
+       breathes gently (each enemy's own e->bob phases it so a pack doesn't
+       pulse in lockstep) instead of sitting at a flat alpha */
     if (e->type != T_BOSS && enemy_breed() > 0) {
+        Uint8 aa = (Uint8)(35 + 20 * sinf(e->bob * 3.0f));
         SDL_SetTextureColorMod(tex_glow, bt_c[0], bt_c[1], bt_c[2]);
-        SDL_SetTextureAlphaMod(tex_glow, 45);
+        SDL_SetTextureAlphaMod(tex_glow, aa);
         SDL_Rect au = {(int)(e->x - cam_x + g_shx) + (int)w / 2 - 22,
                        (int)(e->y - cam_y + g_shy) + (int)h / 2 - 22, 44, 44};
         SDL_RenderCopy(g_ren, tex_glow, NULL, &au);
@@ -1883,15 +1886,21 @@ static void draw_enemy(Enemy *e) {
         break;
     }
     case T_BOSS: {
-        /* menacing glow + big tinted sprite, per boss kind */
+        /* menacing glow + big tinted sprite, per boss kind. Below 1/3 HP
+           (the same threshold that's already spawning the final minion
+           wave) the boss reads as enraged: a bigger, hotter glow and a
+           quick red flicker - pure presentation on top of state the fight
+           already tracks, no new gameplay logic. */
         static const Uint8 GLOW_C[4][3] = {{80,255,80},{255,160,40},{190,80,255},{255,60,60}};
         static const Uint8 TINT_C[4][3] = {{170,255,170},{255,190,130},{210,140,255},{255,110,110}};
         const Uint8 *gc = GLOW_C[e->kind], *tc = TINT_C[e->kind];
+        int enraged = boss_active && e->minions_spawned == 2;
         float bw, bh; enemy_size(e, &bw, &bh);
         SDL_SetTextureColorMod(tex_glow, gc[0], gc[1], gc[2]);
-        SDL_SetTextureAlphaMod(tex_glow, boss_active ? 90 : 40);
-        SDL_Rect gl = {(int)(e->x - cam_x + g_shx) + (int)bw / 2 - 45,
-                       (int)(e->y - cam_y + g_shy) + (int)bh / 2 - 45, 90, 90};
+        SDL_SetTextureAlphaMod(tex_glow, boss_active ? (enraged ? 130 : 90) : 40);
+        int gsize = enraged ? 110 : 90;
+        SDL_Rect gl = {(int)(e->x - cam_x + g_shx) + (int)bw / 2 - gsize / 2,
+                       (int)(e->y - cam_y + g_shy) + (int)bh / 2 - gsize / 2, gsize, gsize};
         SDL_RenderCopy(g_ren, tex_glow, NULL, &gl);
 
         SDL_Texture *bt; SDL_Rect src_r; SDL_Rect d;
@@ -1921,6 +1930,8 @@ static void draw_enemy(Enemy *e) {
         if (e->flash > 0) SDL_SetTextureColorMod(bt, 255, 255, 255);
         else if (e->state == 2 && (ticks / 3) % 2)
             SDL_SetTextureColorMod(bt, 255, 240, 240);
+        else if (enraged && (ticks / 5) % 2)
+            SDL_SetTextureColorMod(bt, 255, 90, 90);       /* fury flicker */
         else SDL_SetTextureColorMod(bt, tc[0], tc[1], tc[2]);
         int flip_boss;
         if (e->kind == 1) flip_boss = e->vx > 0;      /* opossum walks left */
