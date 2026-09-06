@@ -2317,6 +2317,13 @@ static void draw_hud(void) {
     draw_text(6, 56, 1, 0xFF9BA0AB, buf);
     snprintf(buf, sizeof buf, "SHARDS %d/9", shards);
     draw_text(6, 65, 1, 0xFFC49BEA, buf);
+    /* flawless run tracker: without this, the +500 bonus at the door came
+       as a surprise the player had no way to see building up isle-wide.
+       Gated on intro_life==0 like the isle-1 tutorial hints - the isle
+       intro card dims a band at y 74-130 (full width), which this sits
+       right at the top of otherwise. */
+    if (perfect_run && intro_life == 0)
+        draw_text(6, 74, 1, 0xFFF2CE45, "FLAWLESS");
 
     /* level + xp bar */
     snprintf(buf, sizeof buf, "LV%d", level);
@@ -2334,10 +2341,12 @@ static void draw_hud(void) {
         SDL_Rect fg = {24, 35, (int)(40 * frac), 4};
         SDL_RenderFillRect(g_ren, &fg);
     }
-    /* dash cooldown pip */
+    /* dash cooldown: labeled like the LV/xp bar above it, so new players
+       can tell what the little pip means instead of an unlabeled sliver */
     if (level >= 2) {
+        draw_text(6, 43, 1, 0xFF9BA0AB, "DASH");
         set_color(player.dash_cd == 0 ? 0xFFF5F1E8 : 0x55F5F1E8);
-        SDL_Rect d = {6, 44, player.dash_cd == 0 ? 8 : (45 - player.dash_cd) * 8 / 45, 3};
+        SDL_Rect d = {26, 44, player.dash_cd == 0 ? 8 : (45 - player.dash_cd) * 8 / 45, 3};
         SDL_RenderFillRect(g_ren, &d);
     }
 
